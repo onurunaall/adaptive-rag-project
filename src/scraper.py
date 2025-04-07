@@ -29,18 +29,15 @@ class AgentState(TypedDict):
     messages: List[BaseMessage]
     next: str
 
-# --- Global researcher tool instance ---
-# This tool scrapes a list of URLs using WebBaseLoader and returns concatenated content.
+# --- Global Researcher Tool ---
 @tool("Researcher")
 def researcher_tool_impl(urls: List[str]) -> str:
     """
     Researcher tool: Given a list of URLs, scrape each web page and return the combined content.
     """
     try:
-        # WebBaseLoader can accept a single URL or a list.
         loader = WebBaseLoader(urls)
         docs = loader.load()
-        # Concatenate the content of all documents.
         combined = "\n\n".join(
             [f"<Document title='{doc.metadata.get('title', '')}'>\n{doc.page_content}\n</Document>" for doc in docs]
         )
@@ -56,7 +53,7 @@ class ScraperWorkflow:
                  researcher_prompt: str = "You are an Amazon scraper. Extract detailed product information from the given URLs.",
                  analyzer_prompt: str = "You are a market analyst. Analyze the scraped product data and identify winning products.",
                  expert_prompt: str = "You are a drop-shipping expert. Based on the product data, advise whether to start selling the product.",
-                 supervisor_prompt: str = "You are the supervisor over these agents: {agents}. Assign tasks based on conversation. Reply with an agent name for the next task, or 'FINISH' to end."
+                 supervisor_prompt: str = "You are the supervisor over the following agents: {agents}. Assign tasks based on conversation. Reply with an agent name for the next task, or 'FINISH' to end."
                  ):
         """
         Initialize the workflow with configuration parameters.
@@ -67,16 +64,16 @@ class ScraperWorkflow:
         # Create a shared ChatOpenAI instance.
         self.llm = ChatOpenAI(model=self.model, openai_api_key=self.openai_api_key)
 
-        # Store prompts as instance attributes.
+        # Store prompts.
         self.researcher_prompt = researcher_prompt
         self.analyzer_prompt = analyzer_prompt
         self.expert_prompt = expert_prompt
         self.supervisor_prompt = supervisor_prompt
 
-        # Researcher tool is the only external tool; others rely solely on LLM reasoning.
+        # The researcher tool is used to scrape URLs.
         self.researcher_tool = researcher_tool_impl
 
-        # Create agent executors only once.
+        # Create agent executors once.
         self.researcher_agent = self._create_agent([self.researcher_tool], self.researcher_prompt)
         self.analyzer_agent = self._create_agent([], self.analyzer_prompt)
         self.expert_agent = self._create_agent([], self.expert_prompt)
@@ -135,7 +132,7 @@ class ScraperWorkflow:
 
     def analyzer_node(self, state: AgentState) -> dict:
         """
-        Invoke the analyzer agent to analyze scraped product data.
+        Invoke the analyzer agent and return its output as a HumanMessage.
         """
         try:
             result = self.analyzer_agent.invoke(state)
@@ -145,7 +142,7 @@ class ScraperWorkflow:
 
     def expert_node(self, state: AgentState) -> dict:
         """
-        Invoke the expert agent to advise on product viability.
+        Invoke the expert agent and return its output as a HumanMessage.
         """
         try:
             result = self.expert_agent.invoke(state)
@@ -203,34 +200,34 @@ class ScraperWorkflow:
 
 # --- Main Streamlit App ---
 def main():
-    import streamlit as st  # Import locally to decouple from core class.
+    import streamlit as st
     st.title("LangGraph + Function Call + Amazon Scraper")
-    user_input = st.text_input("Enter your input here:")
-    # For scraping, the user is expected to provide a comma-separated list of URLs.
+    user_input = st.text_input("Enter your goal or request:")
     urls_input = st.text_input("Enter URLs (comma-separated):")
     process = st.button("Run Workflow")
     if process:
         if not urls_input:
             st.warning("Please provide at least one URL.")
             st.stop()
-        # Parse URLs into a list.
         urls = [url.strip() for url in urls_input.split(",") if url.strip()]
-        # Initialize the workflow with configuration from environment.
+        if not user_input:
+            st.warning("Please enter your goal or request.")
+            st.stop()
         openai_key = os.getenv("OPENAI_API_KEY")
         if not openai_key:
             st.error("OPENAI_API_KEY not set in environment.")
             st.stop()
         workflow_instance = ScraperWorkflow(model="gpt-4", openai_api_key=openai_key)
-        # Build initial state with the user's input and the list of URLs provided.
-        # Here, we assume the researcher's role is to scrape the provided URLs.
-        initial_state: AgentState = {"messages": [HumanMessage(content=", ".join(urls))], "next": ""}
+        # Construct an informative initial message.
+        initial_message = f"{user_input}\nURLs to research: {', '.join(urls)}"
+        initial_state: AgentState = {"messages": [HumanMessage(content=initial_message)], "next": ""}
         final_state = workflow_instance.run_workflow(initial_state)
         st.write("Final Output:")
-        # Display the final output from the agent.
-        if "agent_outcome" in final_state:
-            st.write(final_state["agent_outcome"])
+        # Display the last message from the final state's messages list, if available.
+        if "messages" in final_state and final_state["messages"]:
+            st.write(final_state["messages"][-1].content)
         else:
-            st.write(final_state.get("next", "Workflow ended without output."))
+            st.write("Workflow ended without producing a final output.")
 
 if __name__ == "__main__":
     main()
