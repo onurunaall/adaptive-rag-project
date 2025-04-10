@@ -11,7 +11,6 @@ import os
 import operator
 from typing import List, Union, TypedDict
 
-# Import necessary components from LangChain and LangGraph.
 from langchain.agents import create_json_chat_agent, AgentAction, AgentFinish
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
 from langchain_core.messages import AIMessage, HumanMessage, ChatMessage, SystemMessage, FunctionMessage, ToolMessage, BaseMessage
@@ -21,60 +20,34 @@ from langchain_openai import ChatOpenAI
 from langgraph.prebuilt.tool_executor import ToolExecutor
 from langgraph.graph import END, StateGraph
 
-# --- Define a custom AgentLoopState type ---
 class AgentLoopState(TypedDict):
     input: str
     chat_history: List[BaseMessage]
     agent_outcome: Union[AgentAction, AgentFinish, None]
     intermediate_steps: List[tuple[AgentAction, str]]
 
-# --- AgentLoopWorkflow Class ---
 class AgentLoopWorkflow:
     def __init__(self, openai_api_key: str, model: str = "gpt-4"):
-        """
-        Initialize the agent loop workflow.
-        Parameters:
-          - openai_api_key: Your OpenAI API key.
-          - model: The chat model to use (e.g., "gpt-4").
-        """
         self.openai_api_key = openai_api_key
         self.model = model
 
-        # Create shared instances.
         self.search_tool = TavilySearchResults(max_results=1)
         self.repl = PythonREPL()
-        # Use ChatOpenAI (chat model) for proper chat functionality.
-        self.chat_model = ChatOpenAI(openai_api_key=self.openai_api_key, model=self.model)
 
-        # Build the python REPL tool.
+        self.chat_model = ChatOpenAI(openai_api_key=self.openai_api_key, model=self.model)
         self.python_repl_tool = self._build_python_repl_tool()
 
-        # Tools list.
         self.tools = [self.search_tool, self.python_repl_tool]
 
-        # Build the prompt template.
-        self.prompt = ChatPromptTemplate(
-            input_variables=["agent_scratchpad", "input", "tool_names", "tools"],
-            messages=[
-                # System message describing the assistant.
-                SystemMessage(
-                    content="Assistant is a large language model trained by OpenAI. It can answer questions and use tools."
-                ),
-                MessagesPlaceholder(variable_name="chat_history", optional=True),
-                # Human message instructing the agent on available tools.
-                HumanMessage(
-                    content=(
-                        "TOOLS\n------\n"
-                        "Available tools: {tools}\n\n"
-                        "When responding, output a JSON with an action and action_input.\n\n"
-                        "USER'S INPUT\n--------------------\n{input}"
-                    )
-                ),
-                MessagesPlaceholder(variable_name="agent_scratchpad"),
-            ]
-        )
+        self.prompt = ChatPromptTemplate(input_variables=["agent_scratchpad", "input", "tool_names", "tools"],
+                                         messages=[SystemMessage(content="Assistant is a large language model trained by OpenAI. It can answer questions and use tools."),
+                                                   MessagesPlaceholder(variable_name="chat_history", optional=True),
+                                                   HumanMessage(content=("TOOLS\n------\n"
+                                                                         "Available tools: {tools}\n\n"
+                                                                         "When responding, output a JSON with an action and action_input.\n\n"
+                                                                         "USER'S INPUT\n--------------------\n{input}")),
+                                                   MessagesPlaceholder(variable_name="agent_scratchpad")])
 
-        # Create the chat agent runnable and the tool executor.
         self.agent_runnable = create_json_chat_agent(self.chat_model, self.tools, self.prompt)
         self.tool_executor = ToolExecutor(self.tools)
 
