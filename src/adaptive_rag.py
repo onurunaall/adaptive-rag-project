@@ -1,6 +1,4 @@
 """
-adaptive_rag.py
-
 Implements a multi-PDF ChatBot using LLama3 and an Adaptive RAG framework.
 This module processes uploaded PDFs, builds a vectorstore for retrieval,
 constructs several prompt chains (for routing, grading, rewriting, and generation),
@@ -13,10 +11,8 @@ import pprint
 from dotenv import load_dotenv
 from typing import List, Dict, Any, TypedDict
 
-# Load environment variables from .env file.
 load_dotenv()
 
-# --- Import LangChain & LangGraph components ---
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import GPT4AllEmbeddings
@@ -29,49 +25,34 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain.schema import Document
 from langgraph.graph import END, StateGraph
 
-# --- Define Graph State Type ---
 class GraphState(TypedDict):
     question: str
     generation: str
     documents: List[Document]
 
-# --- AdaptiveRagChatbot Class ---
 class AdaptiveRagChatbot:
     def __init__(self,
                  local_llm: str,
                  tavily_api_key: str,
                  collection_name: str = "adaptive-rag-chroma",
                  temp_dir: str = None):
-        """
-        Initialize the chatbot with configuration.
-        Parameters:
-          - local_llm: Identifier for the local LLM (e.g., "llama3").
-          - tavily_api_key: API key for TavilySearch.
-          - collection_name: Name for the vectorstore collection.
-          - temp_dir: Directory for temporary storage. Defaults to system temp dir.
-        """
+        
         self.local_llm = local_llm
         self.tavily_api_key = tavily_api_key
         self.collection_name = collection_name
         self.temp_dir = temp_dir or tempfile.gettempdir()
 
-        # Create two shared LLM instances:
-        # One for string output (for generation, rewriting, etc.)
+        # Create two shared LLM instances
+        # One for string output (for generation)
+        # One for JSON output (for routing)
         self.str_llm = ChatOllama(model=self.local_llm, format="plain", temperature=0)
-        # One for JSON output (for routing, grading, etc.)
         self.json_llm = ChatOllama(model=self.local_llm, format="json", temperature=0)
 
-        # Create a shared embeddings instance.
         self.embedding_instance = GPT4AllEmbeddings()
-
-        # Create a shared web search tool instance.
         self.web_search_tool = TavilySearchResults(k=3, tavily_api_key=self.tavily_api_key)
 
-        # Placeholders for vectorstore and retriever.
         self.vectorstore = None
         self.retriever = None
-
-        # Placeholders for prompt chains.
         self.question_router = None
         self.retrieval_grader = None
         self.rag_chain = None
@@ -79,7 +60,6 @@ class AdaptiveRagChatbot:
         self.answer_grader = None
         self.question_rewriter = None
 
-        # Build prompt chains and compile the workflow graph once.
         self.build_prompt_chains()
         self.compiled_graph = self.build_workflow().compile()
 
@@ -87,85 +67,74 @@ class AdaptiveRagChatbot:
         """
         Process uploaded PDF files: save to disk and load their content.
         Returns a list of Document objects.
-        Raises an exception if a file fails to load.
         """
         all_docs = []
+        
         if not os.path.exists(self.temp_dir):
             os.makedirs(self.temp_dir)
+            
         for file in uploaded_files:
             file_path = os.path.join(self.temp_dir, file.name)
+            
             try:
                 with open(file_path, "wb") as f:
                     f.write(file.getbuffer())
             except Exception as e:
                 raise Exception(f"Error saving file {file.name}: {str(e)}")
+                
             try:
                 loader = PyPDFLoader(file_path)
                 docs = loader.load()
                 all_docs.extend(docs)
             except Exception as e:
                 raise Exception(f"Failed to load {file.name}: {str(e)}")
+                
         return all_docs
 
     def build_vectorstore(self, docs: List[Document]) -> None:
         """
         Split documents into chunks and build the vectorstore and retriever.
         """
-        splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
-            chunk_size=250, chunk_overlap=0
-        )
+        splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(chunk_size=250, chunk_overlap=0)
         doc_chunks = splitter.split_documents(docs)
+        
         self.vectorstore = Chroma.from_documents(
             documents=doc_chunks,
             collection_name=self.collection_name,
-            embedding=self.embedding_instance,
-        )
+            embedding=self.embedding_instance)
+        
         self.retriever = self.vectorstore.as_retriever()
 
     def build_prompt_chains(self) -> None:
         """
         Build all prompt chains required for the workflow.
         """
-        # Routing chain: returns a JSON with key "datasource".
-        routing_prompt = PromptTemplate(
-            template=(
-                "You are an expert at routing a user question to a vectorstore or web search. "
-                "Return a JSON with a single key 'datasource' whose value is either 'web_search' or 'vectorstore'. "
-                "Question to route: {question}"
-            ),
-            input_variables=["question"],
-        )
+        routing_prompt = PromptTemplate(template=("You are an expert at routing a user question to a vectorstore or web search. "
+                                                  "Return a JSON with a single key 'datasource' whose value is either 'web_search' or 'vectorstore'. "
+                                                  "Question to route: {question}"),
+                                        input_variables=["question"])
+        
         self.question_router = routing_prompt | self.json_llm | JsonOutputParser()
 
-        # Grading chain: assesses document relevance.
-        grading_prompt = PromptTemplate(
-            template=(
-                "You are a grader assessing the relevance of a document to a question. "
-                "Document: {document} "
-                "Question: {question} "
-                "Return a JSON with a single key 'score' with value 'yes' or 'no'."
-            ),
-            input_variables=["question", "document"],
-        )
+        grading_prompt = PromptTemplate(template=("You are a grader assessing the relevance of a document to a question. "
+                                                  "Document: {document} ""Question: {question} "
+                                                  "Return a JSON with a single key 'score' with value 'yes' or 'no'."),
+                                        input_variables=["question", "document"])
+        
         self.retrieval_grader = grading_prompt | self.json_llm | JsonOutputParser()
 
-        # RAG chain: generates an answer (expects plain string output).
+        # RAG chain: generates an answer (expects plain string output)
         rag_prompt = hub.pull("rlm/rag-prompt")
         self.rag_chain = rag_prompt | self.str_llm | StrOutputParser()
 
         # Hallucination grader: checks if the answer is supported by facts.
-        hallucination_prompt = PromptTemplate(
-            template=(
-                "You are a grader checking if an answer is grounded in the following facts:\n"
-                "-------\n{documents}\n-------\n"
-                "Answer: {generation}\n"
-                "Return a JSON with key 'score' set to 'yes' if supported, 'no' otherwise."
-            ),
-            input_variables=["documents", "generation"],
-        )
+        hallucination_prompt = PromptTemplate(template=("You are a grader checking if an answer is grounded in the following facts:\n"
+                                                        "-------\n{documents}\n-------\n"
+                                                        "Answer: {generation}\n""Return a JSON with key 'score' set to 'yes' if supported, 'no' otherwise."),
+                                              input_variables=["documents", "generation"])
+        
         self.hallucination_grader = hallucination_prompt | self.json_llm | JsonOutputParser()
 
-        # Answer usefulness grader.
         answer_prompt = PromptTemplate(
             template=(
                 "You are a grader assessing if the following answer is useful for the question.\n"
