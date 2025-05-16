@@ -1,287 +1,308 @@
 """
 stock.py: Stock analysis agent workflow using LangGraph.
 
-This script runs a multi-agent system to research stock news (via Yahoo Finance),
-analyze the findings, and suggest potential trading strategies. It uses LangGraph
-to manage the flow between agents and Streamlit for a simple UI.
+Fetches stock news from Yahoo Finance, analyzes it, and suggests trading ideas.
+LangGraph coordinates agents; Streamlit provides the interface.
 """
 
 import os
-import operator
-from typing import List, TypedDict, Sequence
-from dotenv import load_dotenv
+import json
+from typing import List, TypedDict, Sequence, Optional
 import streamlit as st
+from dotenv import load_dotenv
 
-# Pull in API keys from the .env file
-load_dotenv()
-
-# LangChain/LangGraph essentials
-from langchain.agents import AgentExecutor, create_openai_tools_agent
-from langchain.output_parsers.openai_functions import JsonOutputFunctionsParser
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import ChatOpenAI
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.agents import AgentExecutor, create_openai_tools_agent
 from langchain.tools import tool
 from langchain_community.tools.yahoo_finance_news import YahooFinanceNewsTool
-from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
 from langgraph.graph import StateGraph, END
-from langchain_core.runnables import Runnable
 
+load_dotenv()
 
-# --- State ---
-# Defines the data structure passed around the graph.
 class AgentState(TypedDict):
-    messages: Sequence[BaseMessage] # Conversation history + agent outputs
-    next: str # Who runs next?
+    """
+    State passed between graph nodes.
+    """
+    messages: Sequence[BaseMessage]
+    next: str
+    error: Optional[str]
 
+def get_valid_tickers(user_input: str) -> List[str]:
+    """
+    Extract stock tickers from user input.
+    1. Normalize separators to commas.
+    2. Split, uppercase, strip.
+    3. Keep tokens 1–12 chars, allowed [A–Z0–9.-], must have a letter.
+    4. Return sorted, unique list.
+    """
+    if not user_input:
+        return []
 
-# --- Tools ---
+    normalized = user_input.replace(';', ',').replace(' ', ',')
+    raw_tokens = normalized.split(',')
 
-# Keep a single instance of the Yahoo Finance tool to avoid re-initializing.
-# Simple approach for this script; could use a class member in larger apps.
-_yahoo_finance_tool = None
+    allowed_chars = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-")
+    valid: List[str] = []
 
-@tool("Trading_Research")
-def get_stock_news(query: str) -> str:
-    """Tool wrapper for fetching stock news from Yahoo Finance."""
-    global _yahoo_finance_tool
-    if _yahoo_finance_tool is None:
-        _yahoo_finance_tool = YahooFinanceNewsTool()
-    try:
-        return _yahoo_finance_tool.run(query)
-    except Exception as e:
-        # Log the error and return a message usable by the agent graph.
-        print(f"[Error] YahooFinanceNewsTool failed for query '{query}': {e}")
-        return f"Error fetching news: {str(e)}"
+    for tok in raw_tokens:
+        tok = tok.strip().upper()
+        
+        if tok:
+            if (all(ch in allowed_chars for ch in tok)):
+                if (any(ch.isalpha() for ch in tok)):
+                    if (tok not in valid):
+                        valid.append(tok)
+        
+    valid.sort()
+    return valid
 
-
-# --- Workflow ---
 
 class StockWorkflow:
-    """Orchestrates the stock analysis agents using LangGraph."""
+    RESEARCHER  = "Stock_Researcher"
+    ANALYZER    = "Market_Analyst"
+    RECOMMENDER = "Trade_Recommender"
+    SUPERVISOR  = "Workflow_Supervisor"
+    FINISH      = "END_WORKFLOW"
 
-    # Agent identifiers used in the graph
-    RESEARCHER = "RESEARCHER"
-    ANALYZER = "ANALYZER"
-    RECOMMENDER = "RECOMMENDER"
-    SUPERVISOR = "SUPERVISOR"
-    FINISH = "FINISH"
+    def __init__(self,
+                 model_name: str,
+                 api_key: str,
+                 verbose: bool = False,
+                 ui_logger=None):
+                     
+        self.ui_logger = ui_logger
+        self.llm = ChatOpenAI(model=model_name, openai_api_key=api_key, temperature=0, verbose=verbose)
+        self.tool_instance = YahooFinanceNewsTool()
 
-    def __init__(self, model: str, openai_api_key: str):
-        """Sets up the LLM, agents, and supervisor for the workflow."""
+        @tool("Stock_News_Research_Tool")
+        def research_tool(tickers: str) -> str:
+            self._log(f"Fetching news for: {tickers}")
+            
+            try:
+                news = self.tool_instance.run(tickers)
+            except Exception as e:
+                msg = f"Error fetching news for {tickers}: {e}"
+                self._log(msg, level="error")
+                return msg
+            
+            if not news or "Cannot find any article" in news:
+                msg = f"No news found for: {tickers}"
+                self._log(msg, level="warning")
+                return msg
+            
+            return news
 
-        self.model = model
-        self.openai_api_key = openai_api_key
+        self.tools = [research_tool]
+        self._prepare_prompts()
 
-        # One LLM instance for all agents
-        self.llm = ChatOpenAI(model=self.model, openai_api_key=self.openai_api_key, temperature=0)
+        self.researcher = AgentExecutor(agent=create_openai_tools_agent(self.llm, self.tools, self.researcher_prompt),
+                                        tools=self.tools,
+                                        verbose=verbose)
+                     
+        self.analyzer = AgentExecutor(agent=create_openai_tools_agent(self.llm, [], self.analyzer_prompt),
+                                      tools=[],
+                                      verbose=verbose)
+                     
+        self.recommender = AgentExecutor(agent=create_openai_tools_agent(self.llm, [], self.recommender_prompt),
+                                         tools=[],
+                                         verbose=verbose)
 
-        self.agent_names = [self.RESEARCHER, self.ANALYZER, self.RECOMMENDER]
-
-        # Define the available tools (only the researcher uses one here)
-        self.tools = [get_stock_news]
-
-        # --- Agent Definitions ---
-        researcher_prompt = "You are a trader research assistant. Use the Trading_Research tool to find relevant, recent stock news based on the user's query."
-        analyzer_prompt = "You are a market stock analyst. Review the research findings and conversation history. Identify key trends, risks, and potential opportunities based *only* on the provided information."
-        recommender_prompt = "You are a trade recommender. Based *only* on the provided analysis and research, suggest potential trading strategies or points to consider. Frame these as possibilities, not direct financial advice."
-
-        # Create the agent executors
-        self.researcher_agent = self._create_agent(self.tools, researcher_prompt)
-        self.analyzer_agent = self._create_agent([], analyzer_prompt) # No tools needed
-        self.recommender_agent = self._create_agent([], recommender_prompt) # No tools needed
-
-        # --- Supervisor Definition ---
-        supervisor_prompt_template = (
-            "You are the supervisor managing these agents: {agents}. "
-            "Based on the conversation, decide who should act next. "
-            "Respond with only the agent's name or '{finish_step}' if the task is complete."
-        )
-        formatted_supervisor_prompt = supervisor_prompt_template.format(
-            agents=", ".join(self.agent_names), finish_step=self.FINISH
-        )
-        self.supervisor_runnable = self._create_supervisor(self.agent_names, formatted_supervisor_prompt)
-
-    def _create_agent(self, tools: List, system_prompt: str) -> AgentExecutor:
-        """Builds an agent executor instance."""
-        agent_prompt = ChatPromptTemplate.from_messages([
-            ("system", system_prompt),
-            MessagesPlaceholder(variable_name="messages"), # History/context
-            MessagesPlaceholder(variable_name="agent_scratchpad"), # Tool results/thoughts
-        ])
-        agent = create_openai_tools_agent(self.llm, tools, agent_prompt)
-        # Set verbose=True to see agent thoughts/tool calls during execution
-        return AgentExecutor(agent=agent, tools=tools, verbose=False)
-
-    def _create_supervisor(self, agents: List[str], system_prompt: str) -> Runnable:
-        """Creates the supervisor runnable using OpenAI functions for routing."""
-
-        # Options the supervisor can choose from
-        supervisor_options = [self.FINISH] + agents
-
-        # Define the function structure the LLM must use to respond.
-        # This forces the LLM to choose one of the valid next steps.
-        route_action_function = {
-            "name": "route_action",
-            "description": "Select the next agent or finish.",
+        self.routing_function = {
+            "name": "route_to_next",
+            "description": "Choose the next agent or finish.",
             "parameters": {
                 "type": "object",
-                "properties": {"next": {"anyOf": [{"enum": supervisor_options}]}},
-                "required": ["next"],
-            },
+                "properties": {
+                    "next_step": {
+                        "enum": [
+                            self.FINISH,
+                            self.RESEARCHER,
+                            self.ANALYZER,
+                            self.RECOMMENDER]
+                    }
+                },
+                "required": ["next_step"]
+            }
         }
 
-        supervisor_prompt = ChatPromptTemplate.from_messages([
-            ("system", system_prompt),
+    def _prepare_prompts(self):
+        """Define prompts for each agent and the supervisor."""
+        self.researcher_prompt = ChatPromptTemplate.from_messages([
+            ("system", "You are a Stock Researcher. Use the Stock_News_Research_Tool to fetch news."),
             MessagesPlaceholder(variable_name="messages"),
-            ("system", f"Select the next step. Your options are: {supervisor_options}"),
-        ])
+            MessagesPlaceholder(variable_name="agent_scratchpad")])
+        
+        self.analyzer_prompt = ChatPromptTemplate.from_messages([
+            ("system", "You are a Market Analyst. Identify trends, risks, and opportunities."),
+            MessagesPlaceholder(variable_name="messages"),
+            MessagesPlaceholder(variable_name="agent_scratchpad")])
+        
+        self.recommender_prompt = ChatPromptTemplate.from_messages([
+            ("system", "You are a Trade Recommender. Suggest trading ideas based on analysis."),
+            MessagesPlaceholder(variable_name="messages"),
+            MessagesPlaceholder(variable_name="agent_scratchpad")])
 
-        # Chain: Prompt -> LLM (forced to call 'route_action') -> Parse the function output
-        return (
-            supervisor_prompt
-            | self.llm.bind_functions(functions=[route_action_function], function_call="route_action")
-            | JsonOutputFunctionsParser()
-        )
+        finish_token = self.FINISH
+            self.supervisor_system = (f"You are the Workflow Supervisor. "
+                                      f"Agents: {self.RESEARCHER}, {self.ANALYZER}, {self.RECOMMENDER}. "
+                                      f"If research failed or an error occurred, or when done, route to {finish_token}.")
+        
+        options = ", ".join([finish_token, self.RESEARCHER, self.ANALYZER, self.RECOMMENDER])
+        self.supervisor_options = f"Options: {options}"
 
-    # --- Graph Nodes ---
-    # Each node corresponds to an agent or the supervisor running.
+    def _log(self, message: str, level: str = "info"):
+        """Log to Streamlit UI or print to console."""
+        if self.ui_logger:
+            getattr(self.ui_logger, level)(message)
+        else:
+            print(f"[{level.upper()}] {message}")
 
-    def _execute_agent_node(self, state: AgentState, agent: AgentExecutor, agent_name: str) -> dict:
-        """Helper to run an agent and format the output for the graph state."""
+    def _run_node(self, state: AgentState, executor: AgentExecutor, node_name: str) -> dict:
+        self._log(f"Running {node_name}")
+        
         try:
-            result = agent.invoke(state)
-            # Wrap the output in a HumanMessage to add it to the conversation history
-            return {"messages": [HumanMessage(content=result["output"], name=agent_name)]}
-        except Exception as e:
-            error_msg = f"Error in {agent_name}: {str(e)}"
-            print(error_msg)
-            # Still return a message so the graph can potentially continue/report the error
-            return {"messages": [HumanMessage(content=error_msg, name=agent_name)]}
+            result = executor.invoke({"messages": state["messages"]})
+            output = result.get("output", "")
+        except Exception as exc:
+            msg = f"{node_name} exception: {exc}"
+            self._log(msg, level="error")
+            return {"messages": [HumanMessage(content=msg, name="SystemError")], "error": msg}
+
+        for kw in ("Error fetching news", "No news found"):
+            if kw in output:
+                self._log(f"{node_name} issue: {output}", level="warning")
+                return {"messages": [HumanMessage(content=output, name=node_name)], "error": output}
+
+        self._log(f"{node_name} completed")
+        return {"messages": [HumanMessage(content=output, name=node_name)], "error": None}
 
     def run_researcher(self, state: AgentState) -> dict:
-        """Node that executes the researcher agent."""
-        print(f"---> Executing {self.RESEARCHER}")
-        return self._execute_agent_node(state, self.researcher_agent, self.RESEARCHER)
+        return self._run_node(state, self.researcher, self.RESEARCHER)
 
     def run_analyzer(self, state: AgentState) -> dict:
-        """Node that executes the analyzer agent."""
-        print(f"---> Executing {self.ANALYZER}")
-        return self._execute_agent_node(state, self.analyzer_agent, self.ANALYZER)
+        return self._run_node(state, self.analyzer, self.ANALYZER)
 
     def run_recommender(self, state: AgentState) -> dict:
-        """Node that executes the recommender agent."""
-        print(f"---> Executing {self.RECOMMENDER}")
-        return self._execute_agent_node(state, self.recommender_agent, self.RECOMMENDER)
+        return self._run_node(state, self.recommender, self.RECOMMENDER)
 
     def run_supervisor(self, state: AgentState) -> dict:
-        """Node that executes the supervisor to decide the next step."""
-        print(f"---> Executing {self.SUPERVISOR}")
+        if state.get("error"):
+            err = state["error"]
+            self._log(f"Supervisor ending due to error: {err}", level="warning")
+            return {"next": self.FINISH, "error": err}
+
+        messages = [SystemMessage(content=self.supervisor_system)] + state["messages"] + [SystemMessage(content=self.supervisor_options)]
+
         try:
-            supervisor_decision = self.supervisor_runnable.invoke(state)
-            next_step = supervisor_decision.get("next", self.FINISH) # Default to FINISH if key missing
-            print(f"Supervisor Decision: Next step = {next_step}")
-            return {"next": next_step}
-        except Exception as e:
-            # If supervisor fails, we probably should just end.
-            error_msg = f"Error in Supervisor: {str(e)}. Ending workflow."
-            print(error_msg)
-            return {"next": self.FINISH}
+            response = self.llm(messages=messages,
+                                functions=[self.routing_function],
+                                function_call={"name": "route_to_next"})
+            
+            fn_call = response.additional_kwargs.get("function_call", {})
+            args = fn_call.get("arguments", "{}")
+            parsed = json.loads(args)
+            next_step = parsed.get("next_step", self.FINISH)
+        
+        except Exception as exc:
+            err = f"Supervisor exception: {exc}"
+            self._log(err, level="error")
+            return {"next": self.FINISH, "error": err}
 
-    def build_graph(self) -> StateGraph:
-        """Constructs the LangGraph StateGraph."""
+        self._log(f"Supervisor routed to: {next_step}")
+        return {"next": next_step, "error": None}
+
+    def compile_graph(self) -> 'Runnable':
+        """
+        Build and return the LangGraph workflow.
+        """
         graph = StateGraph(AgentState)
-
-        # Add nodes for each agent and the supervisor
         graph.add_node(self.RESEARCHER, self.run_researcher)
         graph.add_node(self.ANALYZER, self.run_analyzer)
         graph.add_node(self.RECOMMENDER, self.run_recommender)
         graph.add_node(self.SUPERVISOR, self.run_supervisor)
 
-        # Edges: All agents report back to the supervisor
         graph.add_edge(self.RESEARCHER, self.SUPERVISOR)
         graph.add_edge(self.ANALYZER, self.SUPERVISOR)
         graph.add_edge(self.RECOMMENDER, self.SUPERVISOR)
 
-        # Conditional edges: The supervisor routes to the next agent or ends
-        graph.add_conditional_edges(
-            self.SUPERVISOR,
-            lambda state: state["next"], # Route based on the 'next' value in the state
-            {
-                self.RESEARCHER: self.RESEARCHER,
-                self.ANALYZER: self.ANALYZER,
-                self.RECOMMENDER: self.RECOMMENDER,
-                self.FINISH: END # Special END state from LangGraph
-            }
-        )
+        def get_next(state: AgentState) -> str:
+            return state["next"]
 
-        # The supervisor is the entry point
+        routing = {self.RESEARCHER: self.RESEARCHER,
+                   self.ANALYZER: self.ANALYZER,
+                   self.RECOMMENDER: self.RECOMMENDER,
+                   self.FINISH: END}
+        
+        graph.add_conditional_edges(self.SUPERVISOR, get_next, routing)
         graph.set_entry_point(self.SUPERVISOR)
 
-        # Compile the graph into a runnable application
-        compiled_graph = graph.compile()
-        return compiled_graph
+        return graph.compile()
 
 
-# --- Streamlit UI ---
+def run_stock_analysis_ui():
+    """
+    Streamlit UI:
+      - Sidebar: model, API key, verbosity
+      - Main: ticker input, logs, run button
+    """
+    st.set_page_config(page_title="Stock News Analysis", layout="wide")
+    st.title("Stock News Analysis Workflow")
+    st.sidebar.header("Configuration")
 
-def run_ui():
-    """Runs the Streamlit interface for the stock workflow."""
-    st.set_page_config(page_title="Stock Analysis Workflow", layout="wide")
-    st.title("Stock Analysis Workflow 📈")
-    st.caption("Agents researching and analyzing stock news")
+    model_name = st.sidebar.selectbox("OpenAI Model", 
+                                      ["gpt-4-turbo", "gpt-4-turbo-preview", "gpt-3.5-turbo"])
+    
+    api_key = st.sidebar.text_input("OpenAI API Key", type="password", value=os.getenv("OPENAI_API_KEY", ""))
+    verbose = st.sidebar.checkbox("Enable Console Verbose Logging", value=False)
 
-    # --- Sidebar Config ---
-    with st.sidebar:
-        st.header("Configuration")
-        model_choice = st.selectbox(
-            "OpenAI Model",
-            ["gpt-4-turbo", "gpt-4-turbo-preview", "gpt-3.5-turbo"],
-            index=0
-        )
-        api_key_input = st.text_input("OpenAI API Key", type="password")
+    tickers_input = st.text_input("Enter stock tickers (comma or space separated):")
+    log_area = st.container()
 
-    # --- Main Input/Output ---
-    query = st.text_input("What stocks are you interested in?", placeholder="e.g., Latest news for MSFT and GOOGL")
+    if st.button("Run Analysis"):
+        log_area.empty()
+        log_area.info("Starting workflow")
 
-    if st.button("Run Workflow"):
-        if not api_key_input:
-            st.warning("Please enter your OpenAI API key in the sidebar.", icon="🔑")
-            st.stop()
-        if not query:
-            st.warning("Please enter a stock query.", icon="❓")
+        if not api_key:
+            log_area.warning("Please enter your OpenAI API key.")
             st.stop()
 
-        # Initialize and run the workflow
-        with st.spinner("🤖 Agents at work..."):
-            try:
-                workflow = StockWorkflow(model=model_choice, openai_api_key=api_key_input)
-                graph_app = workflow.build_graph()
+        if not tickers_input.strip():
+            log_area.warning("Please enter at least one ticker.")
+            st.stop()
 
-                initial_state = {"messages": [HumanMessage(content=query)], "next": ""}
+        tickers = get_valid_tickers(tickers_input)
+        if not tickers:
+            log_area.warning("No valid tickers found. Use symbols like MSFT or AAPL.")
+            st.stop()
 
-                st.subheader("Workflow Progress:")
-                log_container = st.container(height=400) # Container for scrolling logs
+        query = ",".join(tickers)
+        log_area.success(f"Tickers to process: {query}")
 
-                final_state = None
-                for step_output in graph_app.stream(initial_state):
-                    node_name = list(step_output.keys())[0]
-                    node_data = step_output[node_name]
+        try:
+            wf = StockWorkflow(model_name, api_key, verbose, ui_logger=log_area)
+            graph = wf.compile_graph()
+            state = {"messages": [HumanMessage(content=f"Research news for: {query}", name=wf.RESEARCHER)],
+                     "error": None}
 
-                    log_container.markdown(f"**Running Node:** `{node_name}`")
-                    log_container.write(node_data) # Show state changes/messages
-                    log_container.divider()
-                    final_state = node_data # Keep track of last state data
+            final_state = None
+            for step in graph.stream(state):
+                final_state = list(step.values())[0]
 
-                st.success("Workflow complete!", icon="✅")
+            log_area.success("Workflow completed")
+            st.subheader("Final Outcome")
 
-                # Display the final message from the conversation history
-                # if final_state and "messages" in final_state and final_state["messages"]:
-                #     st.subheader("Final Output:")
-                #     st.info(final_state["messages"][-1].content)
+            if final_state.get("error"):
+                st.error(f"Workflow ended with error: {final_state['error']}")
+            else:
+                last = final_state["messages"][-1].content
+                st.info(last)
 
-            except Exception as e:
-                st.error(f"An error occurred: {e}", icon="🚨")
+        except Exception as e:
+            log_area.error(f"Critical error: {e}")
+            st.error(f"Critical error: {e}")
 
 
 if __name__ == "__main__":
-    run_ui()
+    run_stock_analysis_ui()
