@@ -1,333 +1,336 @@
 """
-Implements a multi-PDF ChatBot using LLama3 and an Adaptive RAG framework.
-This module processes uploaded PDFs, builds a vectorstore for retrieval,
-constructs several prompt chains (for routing, grading, rewriting, and generation),
-and compiles a workflow graph that dynamically selects the best strategy to generate an answer.
+adaptive_rag.py: Adaptive RAG chatbot with multi-PDF support and dynamic routing.
+
+Uploads PDFs, caches embeddings, routes between vectorstore vs. web search,
+and uses a LangGraph state machine to generate the best answer.
 """
 
 import os
 import tempfile
-import pprint
+from typing import List, Optional, TypedDict
+
+import streamlit as st
+from streamlit.runtime.uploaded_file_manager import UploadedFile
 from dotenv import load_dotenv
-from typing import List, Dict, Any, TypedDict
+
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import GPT4AllEmbeddings
+from langchain_community.chat_models import ChatOllama
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
+from langchain.chains import LLMChain
+from langchain.schema import Document
+from langchain_community.tools.tavily_search import TavilySearchResults
+from langgraph.graph import StateGraph, END
+
+import logging
+
+# -----------------------------------------------------------------------------
+# Configuration constants
+# -----------------------------------------------------------------------------
+CHUNK_SIZE = 250
+CHUNK_OVERLAP = 50
+DEFAULT_TEMPERATURE = 0
+CACHE_TTL_SECONDS = 24 * 3600  # 24 hours
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 load_dotenv()
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import GPT4AllEmbeddings
-from langchain.prompts import PromptTemplate
-from langchain_community.chat_models import ChatOllama
-from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
-from langchain import hub
-from langchain_community.tools.tavily_search import TavilySearchResults
-from langchain_community.document_loaders import PyPDFLoader
-from langchain.schema import Document
-from langgraph.graph import END, StateGraph
 
 class GraphState(TypedDict):
     question: str
-    generation: str
     documents: List[Document]
+    generation: str
+    retries: int  # cycle counter to prevent infinite loops
+
 
 class AdaptiveRagChatbot:
-    def __init__(self,
-                 local_llm: str,
-                 tavily_api_key: str,
-                 collection_name: str = "adaptive-rag-chroma",
-                 temp_dir: str = None):
-        
+    def __init__(
+        self,
+        local_llm: str,
+        tavily_api_key: str,
+        collection_name: str,
+        temp_dir: Optional[str] = None,
+        max_retries: int = 3
+    ):
         self.local_llm = local_llm
         self.tavily_api_key = tavily_api_key
         self.collection_name = collection_name
         self.temp_dir = temp_dir or tempfile.gettempdir()
+        self.max_retries = max_retries
 
-        # Create two shared LLM instances
-        # One for string output (for generation)
-        # One for JSON output (for routing)
-        self.str_llm = ChatOllama(model=self.local_llm, format="plain", temperature=0)
-        self.json_llm = ChatOllama(model=self.local_llm, format="json", temperature=0)
+        # JSON-output LLM & plain-text LLM
+        self.json_llm = ChatOllama(model=self.local_llm, format="json", temperature=DEFAULT_TEMPERATURE)
+        self.text_llm = ChatOllama(model=self.local_llm, temperature=DEFAULT_TEMPERATURE)
 
-        self.embedding_instance = GPT4AllEmbeddings()
-        self.web_search_tool = TavilySearchResults(k=3, tavily_api_key=self.tavily_api_key)
+        self.embeddings = GPT4AllEmbeddings()
+        self.web_search_tool = TavilySearchResults(api_key=self.tavily_api_key)
 
         self.vectorstore = None
         self.retriever = None
-        self.question_router = None
-        self.retrieval_grader = None
-        self.rag_chain = None
-        self.hallucination_grader = None
-        self.answer_grader = None
-        self.question_rewriter = None
 
-        self.build_prompt_chains()
-        self.compiled_graph = self.build_workflow().compile()
-
-    def process_uploaded_pdfs(self, uploaded_files) -> List[Document]:
-        """
-        Process uploaded PDF files: save to disk and load their content.
-        Returns a list of Document objects.
-        """
-        all_docs = []
-        
-        if not os.path.exists(self.temp_dir):
-            os.makedirs(self.temp_dir)
-            
-        for file in uploaded_files:
-            file_path = os.path.join(self.temp_dir, file.name)
-            
-            try:
-                with open(file_path, "wb") as f:
-                    f.write(file.getbuffer())
-            except Exception as e:
-                raise Exception(f"Error saving file {file.name}: {str(e)}")
-                
-            try:
-                loader = PyPDFLoader(file_path)
-                docs = loader.load()
-                all_docs.extend(docs)
-            except Exception as e:
-                raise Exception(f"Failed to load {file.name}: {str(e)}")
-                
-        return all_docs
+        self._build_prompt_chains()
+        self.workflow = self._build_workflow_graph().compile()
 
     def build_vectorstore(self, docs: List[Document]) -> None:
-        """
-        Split documents into chunks and build the vectorstore and retriever.
-        """
-        splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(chunk_size=250, chunk_overlap=0)
-        doc_chunks = splitter.split_documents(docs)
-        
-        self.vectorstore = Chroma.from_documents(
-            documents=doc_chunks,
-            collection_name=self.collection_name,
-            embedding=self.embedding_instance)
-        
-        self.retriever = self.vectorstore.as_retriever()
+        """Split into overlapping chunks and build a Chroma vectorstore."""
+        try:
+            splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+                chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP
+            )
+            chunks = splitter.split_documents(docs)
+            self.vectorstore = Chroma.from_documents(
+                chunks,
+                embedding=self.embeddings,
+                collection_name=self.collection_name
+            )
+            self.retriever = self.vectorstore.as_retriever()
+        except Exception as e:
+            logger.error(f"Failed to build vectorstore: {e}")
+            raise
 
-    def build_prompt_chains(self) -> None:
-        """
-        Build all prompt chains required for the workflow.
-        """
-        routing_prompt = PromptTemplate(template=("You are an expert at routing a user question to a vectorstore or web search. "
-                                                  "Return a JSON with a single key 'datasource' whose value is either 'web_search' or 'vectorstore'. "
-                                                  "Question to route: {question}"),
-                                        input_variables=["question"])
-        
-        self.question_router = routing_prompt | self.json_llm | JsonOutputParser()
-
-        grading_prompt = PromptTemplate(template=("You are a grader assessing the relevance of a document to a question. "
-                                                  "Document: {document} ""Question: {question} "
-                                                  "Return a JSON with a single key 'score' with value 'yes' or 'no'."),
-                                        input_variables=["question", "document"])
-        
-        self.retrieval_grader = grading_prompt | self.json_llm | JsonOutputParser()
-
-        # RAG chain: generates an answer (expects plain string output)
-        rag_prompt = hub.pull("rlm/rag-prompt")
-        self.rag_chain = rag_prompt | self.str_llm | StrOutputParser()
-
-        # Hallucination grader: checks if the answer is supported by facts.
-        hallucination_prompt = PromptTemplate(template=("You are a grader checking if an answer is grounded in the following facts:\n"
-                                                        "-------\n{documents}\n-------\n"
-                                                        "Answer: {generation}\n""Return a JSON with key 'score' set to 'yes' if supported, 'no' otherwise."),
-                                              input_variables=["documents", "generation"])
-        
-        self.hallucination_grader = hallucination_prompt | self.json_llm | JsonOutputParser()
-
-        answer_prompt = PromptTemplate(
+    def _build_prompt_chains(self) -> None:
+        """Define LLMChains for routing, grading, rewriting, generating, and usefulness checking."""
+        router_pt = PromptTemplate(
             template=(
-                "You are a grader assessing if the following answer is useful for the question.\n"
-                "Answer: {generation}\n"
-                "Question: {question}\n"
-                "Return a JSON with key 'score' set to 'yes' if useful, 'no' otherwise."
+                "Return JSON {'datasource':'web_search'} or {'datasource':'vectorstore'} "
+                "for this question.\nQuestion: {question}"
             ),
-            input_variables=["generation", "question"],
+            input_variables=["question"]
         )
-        self.answer_grader = answer_prompt | self.json_llm | JsonOutputParser()
+        self.router_chain = LLMChain(
+            llm=self.json_llm, prompt=router_pt, output_parser=JsonOutputParser()
+        )
 
-        # Question rewriting chain: improves the question for retrieval.
-        rewrite_prompt = PromptTemplate(
+        doc_grade_pt = PromptTemplate(
             template=(
-                "You are a question re-writer. Improve the following question for better vectorstore retrieval.\n"
-                "Original question: {question}\n"
-                "Improved question:"
+                "Return JSON {'score':'yes'} if this document helps answer the question, "
+                "else {'score':'no'}.\nDocument: {document}\nQuestion: {question}"
             ),
-            input_variables=["question"],
+            input_variables=["document", "question"]
         )
-        self.question_rewriter = rewrite_prompt | self.str_llm | StrOutputParser()
+        self.doc_grader = LLMChain(
+            llm=self.json_llm, prompt=doc_grade_pt, output_parser=JsonOutputParser()
+        )
 
-    def build_workflow(self) -> StateGraph:
-        """
-        Build and return the workflow graph.
-        The flow is:
-          - Conditional entry based on routing: either "web_search" or "retrieve"
-          - retrieve -> grade_documents -> if no docs, transform_query -> web_search -> retrieve -> generate
-          - After generation, decide if answer is supported/useful; if not, loop back to transform_query.
-        """
-        # Define node functions.
-        def node_retrieve(state: Dict[str, Any]) -> Dict[str, Any]:
-            print(">>> [AdaptiveRag] Retrieving documents...")
-            question = state["question"]
-            docs = self.retriever.get_relevant_documents(question)
-            return {"documents": docs, "question": question}
+        rewrite_pt = PromptTemplate(
+            template=(
+                "Rewrite the question to improve retrieval quality.\n"
+                "Original question: {question}\nRewritten question:"
+            ),
+            input_variables=["question"]
+        )
+        self.rewrite_chain = LLMChain(
+            llm=self.text_llm, prompt=rewrite_pt, output_parser=StrOutputParser()
+        )
 
-        def node_generate(state: Dict[str, Any]) -> Dict[str, Any]:
-            print(">>> [AdaptiveRag] Generating answer...")
-            question = state["question"]
-            docs = state["documents"]
-            answer = self.rag_chain.invoke({"context": docs, "question": question})
-            return {"documents": docs, "question": question, "generation": answer}
+        rag_pt = PromptTemplate(
+            template=(
+                "Answer using these documents.\nDocuments: {documents}\n"
+                "Question: {question}\nAnswer:"
+            ),
+            input_variables=["documents", "question"]
+        )
+        self.rag_chain = LLMChain(llm=self.text_llm, prompt=rag_pt)
 
-        def node_grade_documents(state: Dict[str, Any]) -> Dict[str, Any]:
-            print(">>> [AdaptiveRag] Grading documents...")
-            question = state["question"]
-            docs = state["documents"]
-            filtered = []
-            for doc in docs:
-                result = self.retrieval_grader.invoke({
-                    "question": question,
-                    "document": doc.page_content
-                })
-                if result.get("score", "").lower() == "yes":
-                    filtered.append(doc)
-            return {"documents": filtered, "question": question}
+        useful_pt = PromptTemplate(
+            template=(
+                "Return JSON {'score':'yes'} if this answer is useful, else {'score':'no'}.\n"
+                "Answer: {generation}\nQuestion: {question}"
+            ),
+            input_variables=["generation", "question"]
+        )
+        self.usefulness_chain = LLMChain(
+            llm=self.json_llm, prompt=useful_pt, output_parser=JsonOutputParser()
+        )
 
-        def node_transform_query(state: Dict[str, Any]) -> Dict[str, Any]:
-            print(">>> [AdaptiveRag] Transforming query...")
-            question = state["question"]
-            new_question = self.question_rewriter.invoke({"question": question})
-            return {"documents": state.get("documents", []), "question": new_question}
-
-        def node_web_search(state: Dict[str, Any]) -> Dict[str, Any]:
-            print(">>> [AdaptiveRag] Performing web search...")
-            question = state["question"]
-            docs = state.get("documents", [])
-            try:
-                results = self.web_search_tool.invoke({"query": question})
-                combined = "\n".join([res["content"] for res in results])
-                web_doc = Document(page_content=combined)
-                docs.append(web_doc)
-            except Exception as e:
-                print("Error during web search:", str(e))
-            return {"documents": docs, "question": question}
-
-        def decide_next(state: Dict[str, Any]) -> str:
-            # If no relevant documents remain after grading, transform query.
-            if not state.get("documents"):
-                print("No relevant documents; transforming query.")
-                return "transform_query"
-            else:
-                print("Relevant documents found; generating answer.")
-                return "generate"
-
-        def decide_generation(state: Dict[str, Any]) -> str:
-            # After generation, check if the answer is supported by facts.
-            generation = state.get("generation", "")
-            docs = state.get("documents", [])
-            combined_docs = "\n".join([doc.page_content for doc in docs])
-            result = self.hallucination_grader.invoke({
-                "documents": combined_docs,
-                "generation": generation
-            })
-            if result.get("score", "").lower() == "yes":
-                print("Answer is supported; now checking usefulness.")
-                result2 = self.answer_grader.invoke({
-                    "question": state["question"],
-                    "generation": generation
-                })
-                if result2.get("score", "").lower() == "yes":
-                    return "useful"
-                else:
-                    return "not useful"
-            else:
-                return "not supported"
-
-        # Build the workflow graph using the defined GraphState type.
+    def _build_workflow_graph(self) -> StateGraph:
+        """Construct the StateGraph with routing and retry logic."""
         graph = StateGraph(GraphState)
-        graph.add_node("retrieve", node_retrieve)
-        graph.add_node("grade_documents", node_grade_documents)
-        graph.add_node("transform_query", node_transform_query)
-        graph.add_node("web_search", node_web_search)
-        graph.add_node("generate", node_generate)
-        # Entry point: route question based on routing chain.
-        def route_question(state: Dict[str, Any]) -> str:
-            print(">>> [AdaptiveRag] Routing question...")
-            question = state["question"]
-            result = self.question_router.invoke({"question": question})
-            datasource = result.get("datasource", "").lower()
-            if datasource == "web_search":
-                print("Routing to web search.")
-                return "web_search"
-            elif datasource == "vectorstore":
-                print("Routing to vectorstore retrieval.")
+
+        def node_route(s: GraphState) -> str:
+            try:
+                ds = self.router_chain.run({"question": s["question"]})
+                return "web_search" if ds.get("datasource","").lower() == "web_search" else "retrieve"
+            except Exception:
                 return "retrieve"
-            else:
-                print("Default routing to vectorstore.")
-                return "retrieve"
-        graph.set_conditional_entry_point(
-            route_question,
-            {"web_search": "web_search", "vectorstore": "retrieve"}
+
+        graph.add_node("route_question", node_route)
+        graph.set_entry_point("route_question")
+        graph.add_conditional_edges(
+            "route_question",
+            lambda key: key,
+            {"retrieve": "retrieve", "web_search": "web_search"}
         )
-        graph.add_edge("web_search", "generate")
+
+        def node_retrieve(s: GraphState) -> GraphState:
+            if not self.retriever:
+                return {**s, "documents": [], "generation": ""}
+            docs = self.retriever.get_relevant_documents(s["question"])
+            return {**s, "documents": docs}
+
+        graph.add_node("retrieve", node_retrieve)
         graph.add_edge("retrieve", "grade_documents")
+
+        def node_grade_docs(s: GraphState) -> GraphState:
+            kept = []
+            for d in s["documents"]:
+                try:
+                    out = self.doc_grader.run({
+                        "document": d.page_content,
+                        "question": s["question"]
+                    })
+                    score = out.get("score","").lower()
+                except Exception:
+                    score = "no"
+                if score == "yes":
+                    kept.append(d)
+            return {**s, "documents": kept}
+
+        graph.add_node("grade_documents", node_grade_docs)
         graph.add_conditional_edges(
             "grade_documents",
-            decide_next,
-            {"transform_query": "transform_query", "generate": "generate"}
+            lambda s: "generate" if s["documents"] else "transform_query",
+            {"generate": "generate", "transform_query": "transform_query"}
         )
-        graph.add_edge("transform_query", "retrieve")
+
+        def node_transform(s: GraphState) -> GraphState:
+            new_q = self.rewrite_chain.run({"question": s["question"]})
+            return {
+                "question": new_q,
+                "documents": [],
+                "generation": s["generation"],
+                "retries": s["retries"] + 1
+            }
+
+        graph.add_node("transform_query", node_transform)
+        graph.add_edge("transform_query", "route_question")
+
+        def node_web_search(s: GraphState) -> GraphState:
+            try:
+                hits = self.web_search_tool.invoke(s["question"])
+                texts = [h.get("content","") for h in hits or []]
+                combined = "\n".join(texts)
+                docs = [Document(page_content=combined)] if combined else []
+            except Exception as e:
+                logger.error(f"Web search failed: {e}")
+                docs = []
+            return {**s, "documents": docs}
+
+        graph.add_node("web_search", node_web_search)
+        graph.add_edge("web_search", "generate")
+
+        def node_generate(s: GraphState) -> GraphState:
+            ans = self.rag_chain.run({
+                "documents": s["documents"], "question": s["question"]
+            })
+            return {**s, "generation": ans}
+
+        graph.add_node("generate", node_generate)
+
+        def decide_usefulness(s: GraphState) -> str:
+            if s["retries"] >= self.max_retries:
+                return END
+            try:
+                res = self.usefulness_chain.run({
+                    "generation": s["generation"], "question": s["question"]
+                })
+                score = res.get("score","").lower()
+            except Exception:
+                score = "no"
+            return END if score == "yes" else "transform_query"
+
         graph.add_conditional_edges(
             "generate",
-            decide_generation,
-            {"not supported": "generate", "useful": END, "not useful": "transform_query"}
+            decide_usefulness,
+            {END: END, "transform_query": "transform_query"}
         )
+
         return graph
 
-    def run_workflow(self, question: str) -> str:
-        """
-        Run the adaptive RAG workflow with the given question.
-        Uses the precompiled graph and returns the final generated answer.
-        """
-        initial_state = {"question": question}
-        final_state = None
-        for state in self.compiled_graph.stream(initial_state):
-            final_state = state
-        return final_state.get("generation", "No generation produced.")
+    def run(self, question: str) -> str:
+        """Execute workflow starting with empty documents. Return final generation."""
+        state: GraphState = {
+            "question": question,
+            "documents": [],
+            "generation": "",
+            "retries": 0
+        }
+        for step in self.workflow.stream(state):
+            state = list(step.values())[0]
+        return state["generation"]
 
-# --- Main Function (Streamlit UI) ---
+
+# ---- Streamlit App ---- #
+
+@st.cache_data(
+    ttl=CACHE_TTL_SECONDS,
+    hash_funcs={UploadedFile: lambda f: (f.name, f.size)}
+)
+def load_and_split_pdfs(files: List[UploadedFile]) -> List[Document]:
+    """Load & split PDFs into Documents, keyed on filename+size."""
+    docs: List[Document] = []
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for f in files:
+            path = os.path.join(tmpdir, f.name)
+            with open(path, "wb") as out:
+                out.write(f.getbuffer())
+            docs.extend(PyPDFLoader(path).load())
+    return docs
+
+
+@st.cache_resource(
+    ttl=CACHE_TTL_SECONDS,
+    hash_funcs={Document: lambda d: hash(d.page_content)}
+)
+def get_bot_and_store(docs: List[Document]) -> AdaptiveRagChatbot:
+    """Instantiate chatbot and build vectorstore, keyed on document content."""
+    bot = AdaptiveRagChatbot(
+        local_llm="llama3",
+        tavily_api_key=os.getenv("TAVILY_API_KEY", ""),
+        collection_name="adaptive_rag_chroma"
+    )
+    bot.build_vectorstore(docs)
+    return bot
+
+
 def main():
-    import streamlit as st  # Import here to decouple from core class.
-    st.title("Multi-PDF ChatBot using LLAMA3 & Adaptive RAG")
-    user_question = st.text_input("Question:", placeholder="Ask about your PDF", key='input')
-    uploaded_files = st.sidebar.file_uploader("Upload your PDF file", type=['pdf'], accept_multiple_files=True)
-    process = st.sidebar.button("Process")
-    if process:
-        if not uploaded_files:
-            st.warning("Please upload at least one PDF file.")
-            st.stop()
-        # Instantiate the chatbot with configuration from environment or UI.
-        chatbot = AdaptiveRagChatbot(
-            local_llm="llama3",
-            tavily_api_key=os.getenv("TAVILY_API_KEY", ""),
-            collection_name="adaptive-rag-chroma",
-            temp_dir=None  # Use system temporary directory.
-        )
+    st.title("Adaptive RAG ChatBot")
+    question = st.text_input("Enter your question:")
+    uploaded = st.sidebar.file_uploader(
+        "Upload PDFs", type="pdf", accept_multiple_files=True
+    )
+
+    if st.sidebar.button("Process"):
+        if not uploaded:
+            st.error("Please upload at least one PDF.")
+            return
+        if not question.strip():
+            st.error("Please enter a non-empty question.")
+            return
+
+        docs = load_and_split_pdfs(uploaded)
+        st.info(f"Loaded {len(docs)} pages from PDF(s).")
+
         try:
-            docs = chatbot.process_uploaded_pdfs(uploaded_files)
+            bot = get_bot_and_store(docs)
         except Exception as e:
-            st.error(str(e))
-            st.stop()
-        st.write("PDFs processed successfully.")
+            st.error(f"Failed to initialize chatbot: {e}")
+            return
+
         try:
-            chatbot.build_vectorstore(docs)
+            answer = bot.run(question)
         except Exception as e:
-            st.error(f"Error building vectorstore: {str(e)}")
-            st.stop()
-        # Build prompt chains (graph is compiled in __init__)
-        answer = chatbot.run_workflow(user_question)
-        st.write("Final Answer:")
+            st.error(f"Error during generation: {e}")
+            return
+
+        st.subheader("Answer")
         st.write(answer)
+
 
 if __name__ == "__main__":
     main()
