@@ -477,23 +477,56 @@ class CoreRAGEngine:
 
     def ingest(
         self,
-        sources: Union[Dict[str, Any], List[Dict[str, Any]]],
+        sources: Union[Dict[str, Any], List[Dict[str, Any]], None] = None,
         collection_name: Optional[str] = None,
-        recreate_collection: bool = False
+        recreate_collection: bool = False,
+        direct_documents: Optional[List[Document]] = None
     ) -> None:
         name = collection_name or self.default_collection_name
-        if not isinstance(sources, list):
-            sources = [sources]
-        all_chunks: List[Document] = []
-        for s in sources:
-            stype = s.get("type"); sval = s.get("value")
-            raw = self.load_documents(stype, sval)
-            chunks = self.split_documents(raw)
-            all_chunks.extend(chunks)
-        if all_chunks:
-            self.index_documents(all_chunks, name, recreate_collection)
-        elif recreate_collection:
-            self._init_or_load_vectorstore(name, recreate=True)
+        self.logger.info(f"Starting ingestion for collection '{name}'. Recreate: {recreate_collection}")
+
+        all_chunks_for_collection: List[Document] = []
+
+        # 1) Handle preloaded documents
+        if direct_documents is not None and isinstance(direct_documents, list) and direct_documents:
+            if all(isinstance(doc, Document) for doc in direct_documents):
+                self.logger.info(f"Using {len(direct_documents)} preloaded documents for ingestion.")
+                # Chunk them according to engine settings
+                all_chunks_for_collection = self.split_documents(direct_documents)
+            else:
+                self.logger.error("`direct_documents` provided but some items are not Document instances.")
+
+        # 2) Otherwise, process `sources`
+        elif sources is not None:
+            self.logger.info("Processing documents from `sources` parameter.")
+            if not isinstance(sources, list):
+                sources = [sources]
+            for src in sources:
+                src_type = src.get("type")
+                src_val  = src.get("value")
+                if not src_type or src_val is None:
+                    self.logger.warning(f"Skipping invalid source: {src}")
+                    continue
+                raw_docs = self.load_documents(source_type=src_type, source_value=src_val)
+                if raw_docs:
+                    chunks = self.split_documents(raw_docs)
+                    all_chunks_for_collection.extend(chunks)
+
+        # 3) Nothing to index?
+        if not all_chunks_for_collection:
+            if recreate_collection:
+                self.logger.info(f"No docs but recreate_collection=True. Clearing '{name}'.")
+                self._init_or_load_vectorstore(name, recreate=True)
+            else:
+                self.logger.warning(f"No documents to ingest for '{name}'. Skipping.")
+            return
+
+        # 4) Index everything
+        self.index_documents(
+            docs=all_chunks_for_collection,
+            name=name,
+            recreate=recreate_collection
+        )
 
     # ---------------------
     # Public API: Legacy Query
