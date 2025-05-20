@@ -1,5 +1,12 @@
+# src/main_app.py
+
+import os
 import streamlit as st
 from src.core_rag_engine import CoreRAGEngine
+from src.stock import fetch_stock_news_documents
+from src.scraper import scrape_urls_as_documents
+from src.loop import AgentLoopWorkflow, AgentLoopState
+from langchain.agents import AgentFinish, AgentAction
 
 st.set_page_config(page_title="InsightEngine - Adaptive RAG", layout="wide")
 st.title("InsightEngine – Adaptive RAG")
@@ -14,6 +21,7 @@ engine = load_engine()
 st.sidebar.header("Config & Ingest")
 collection_name = st.sidebar.text_input("Collection name", value=engine.default_collection_name)
 recreate_collection = st.sidebar.checkbox("Recreate collection", value=False)
+
 st.sidebar.markdown("---")
 st.sidebar.subheader("Add Sources")
 uploaded = st.sidebar.file_uploader("PDF files", type="pdf", accept_multiple_files=True)
@@ -40,8 +48,8 @@ if st.sidebar.button("Ingest Documents"):
             st.sidebar.success("✅ Documents ingested.")
         except Exception as e:
             st.sidebar.error(f"❌ Ingestion failed: {e}")
-            
 
+# Stock News Feed
 st.sidebar.markdown("---")
 st.sidebar.subheader("Stock News Feed 📈")
 
@@ -74,9 +82,6 @@ if st.sidebar.button("Ingest Stock News 📰"):
     if not stock_tickers_input.strip():
         st.sidebar.warning("Please enter at least one stock ticker.")
     else:
-        st.sidebar.info(
-            f"Ingesting news for: {stock_tickers_input} → '{stock_news_collection_name}'"
-        )
         with st.spinner(f"Fetching & ingesting news for {stock_tickers_input}..."):
             try:
                 news_documents = fetch_stock_news_documents(
@@ -93,11 +98,73 @@ if st.sidebar.button("Ingest Stock News 📰"):
                         f"✅ Ingested {len(news_documents)} articles into '{stock_news_collection_name}'."
                     )
                 else:
-                    st.sidebar.warning(
-                        f"No articles found for tickers: {stock_tickers_input}"
-                    )
+                    st.sidebar.warning(f"No articles found for tickers: {stock_tickers_input}")
             except Exception as e:
                 st.sidebar.error(f"❌ Error during ingestion: {e}")
+
+# Web Scraper Feed
+st.sidebar.markdown("---")
+st.sidebar.subheader("Web Scraper Feed 🕸️")
+
+scraper_urls_input = st.sidebar.text_area(
+    "Enter URLs to scrape (one per line)",
+    height=150,
+    key="scraper_urls_text_area",
+    help="Provide full URLs (e.g., https://example.com/page)."
+)
+
+scraper_goal_input = st.sidebar.text_input(
+    "Optional: Goal for scraping (e.g., 'extract product reviews')",
+    key="scraper_goal_text_input",
+    help="This goal will be stored as metadata."
+)
+
+scraper_collection_name = st.sidebar.text_input(
+    "Collection name for scraped content",
+    value="scraped_content",
+    key="scraper_collection_text_input",
+    help="Scraped content will be stored in this collection."
+)
+
+recreate_scraper_collection = st.sidebar.checkbox(
+    "Recreate scraped content collection if it exists",
+    value=False,
+    key="recreate_scraper_collection_checkbox"
+)
+
+if st.sidebar.button("Ingest Scraped Content 🔍"):
+    urls_to_scrape = [
+        url.strip() for url in scraper_urls_input.splitlines()
+        if url.strip().lower().startswith("http")
+    ]
+    if not urls_to_scrape:
+        st.sidebar.warning(
+            "Please enter at least one valid URL to scrape (must start with http/https)."
+        )
+    else:
+        user_goal = scraper_goal_input.strip() or None
+        with st.spinner(f"Scraping & ingesting {len(urls_to_scrape)} URL(s)..."):
+            try:
+                scraped_documents = scrape_urls_as_documents(
+                    urls=urls_to_scrape,
+                    user_goal_for_scraping=user_goal
+                )
+                if scraped_documents:
+                    engine.ingest(
+                        direct_documents=scraped_documents,
+                        collection_name=scraper_collection_name,
+                        recreate_collection=recreate_scraper_collection
+                    )
+                    st.sidebar.success(
+                        f"✅ Ingested content from {len(scraped_documents)} URL(s) "
+                        f"into '{scraper_collection_name}'."
+                    )
+                else:
+                    st.sidebar.warning(
+                        f"No content scraped from provided URLs: {urls_to_scrape}"
+                    )
+            except Exception as e:
+                st.sidebar.error(f"❌ Error during scraping or ingestion: {e}")
 
 # Main: Q&A
 st.header("Query the Collection")
@@ -107,18 +174,15 @@ if st.button("Get Answer"):
     if not question:
         st.warning("Please enter a question.")
     else:
-        with st.spinner("Generating adaptive answer using full workflow..."):
+        with st.spinner("Generating adaptive answer..."):
             try:
                 result = engine.run_full_rag_workflow(
                     question=question,
                     collection_name=collection_name
                 )
             except Exception as e:
-                st.error(f"An unexpected error occurred during the RAG workflow: {e}")
-                result = {
-                    "answer": "Failed to retrieve answer due to an internal workflow error.",
-                    "sources": []
-                }
+                st.error(f"Error during RAG workflow: {e}")
+                result = {"answer": "Error retrieving answer.", "sources": []}
 
         st.subheader("Answer")
         st.write(result.get("answer", ""))
@@ -130,3 +194,73 @@ if st.button("Get Answer"):
         else:
             for s in srcs:
                 st.markdown(f"**{s['source']}**: {s['preview']}")
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Insight Agent (Advanced Tasks)
+st.markdown("---")
+st.header("🔬 Insight Agent (Advanced Tasks)")
+
+agent_goal_input = st.text_area(
+    "Describe your complex task or high-level goal for the Insight Agent:",
+    height=150,
+    key="agent_goal_text_area",
+    help=(
+        "Example: 'Fetch the latest news for MSFT, ingest it into a new collection named "
+        "'msft_daily_news', then summarize the top 3 positive developments.'"
+    )
+)
+
+if st.button("Execute Agent Task 🚀"):
+    if not agent_goal_input.strip():
+        st.warning("Please describe a task or goal for the Insight Agent.")
+    else:
+        if not engine:
+            st.error("CoreRAGEngine is not loaded. Cannot run agent.")
+            st.stop()
+        agent_api_key = os.getenv("OPENAI_API_KEY")
+        if not agent_api_key:
+            st.error("OPENAI_API_KEY is required for the Insight Agent. Set it in your .env.")
+            st.stop()
+
+        with st.spinner("Insight Agent is planning and executing..."):
+            try:
+                insight_agent = AgentLoopWorkflow(
+                    openai_api_key=agent_api_key,
+                    model="gpt-4o",
+                    core_rag_engine_instance=engine,
+                    enable_tavily_search=True,
+                    enable_python_repl=False
+                )
+                final_state: AgentLoopState = insight_agent.run_workflow(
+                    goal=agent_goal_input.strip()
+                )
+
+                st.subheader("Agent Execution Log & Results")
+                steps = final_state.get("intermediate_steps", [])
+                if steps:
+                    with st.expander("Show Agent's Steps", expanded=False):
+                        for i, (action, obs) in enumerate(steps, 1):
+                            st.markdown(f"**Step {i}:**")
+                            if hasattr(action, "tool") and hasattr(action, "tool_input"):
+                                st.markdown(f"Tool: `{action.tool}`")
+                                st.code(str(action.tool_input), language="json")
+                            st.text(f"Output: {obs}")
+                            st.markdown("---")
+                else:
+                    st.info("No intermediate tool calls were logged.")
+
+                st.markdown("---")
+                st.subheader("Agent's Final Output")
+                outcome = final_state.get("agent_outcome")
+                if isinstance(outcome, AgentFinish):
+                    st.success("✅ Agent Task Completed!")
+                    st.markdown(outcome.return_values.get("output", ""))
+                elif isinstance(outcome, AgentAction):
+                    st.warning("Agent stopped at an action (expected to finish).")
+                    st.code(str(outcome), language="json")
+                else:
+                    st.info("Agent finished without a clear outcome.")
+
+            except Exception as e:
+                st.error(f"❌ Error running Insight Agent: {e}")
+                logging.exception("Insight Agent execution error")
