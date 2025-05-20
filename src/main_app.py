@@ -40,6 +40,64 @@ if st.sidebar.button("Ingest Documents"):
             st.sidebar.success("✅ Documents ingested.")
         except Exception as e:
             st.sidebar.error(f"❌ Ingestion failed: {e}")
+            
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Stock News Feed 📈")
+
+stock_tickers_input = st.sidebar.text_input(
+    "Enter stock tickers (e.g., AAPL, MSFT, NVDA)",
+    help="Comma or space-separated ticker symbols."
+)
+
+stock_news_collection_name = st.sidebar.text_input(
+    "Collection name for stock news",
+    value="stock_news",
+    help="Where stock news will be stored."
+)
+
+recreate_stock_news_collection = st.sidebar.checkbox(
+    "Recreate stock news collection if it exists",
+    value=False,
+    key="recreate_stock_news"
+)
+
+max_articles_stock = st.sidebar.number_input(
+    "Max articles per ticker",
+    min_value=1,
+    max_value=20,
+    value=3,
+    step=1
+)
+
+if st.sidebar.button("Ingest Stock News 📰"):
+    if not stock_tickers_input.strip():
+        st.sidebar.warning("Please enter at least one stock ticker.")
+    else:
+        st.sidebar.info(
+            f"Ingesting news for: {stock_tickers_input} → '{stock_news_collection_name}'"
+        )
+        with st.spinner(f"Fetching & ingesting news for {stock_tickers_input}..."):
+            try:
+                news_documents = fetch_stock_news_documents(
+                    tickers_input=stock_tickers_input,
+                    max_articles_per_ticker=max_articles_stock
+                )
+                if news_documents:
+                    engine.ingest(
+                        direct_documents=news_documents,
+                        collection_name=stock_news_collection_name,
+                        recreate_collection=recreate_stock_news_collection
+                    )
+                    st.sidebar.success(
+                        f"✅ Ingested {len(news_documents)} articles into '{stock_news_collection_name}'."
+                    )
+                else:
+                    st.sidebar.warning(
+                        f"No articles found for tickers: {stock_tickers_input}"
+                    )
+            except Exception as e:
+                st.sidebar.error(f"❌ Error during ingestion: {e}")
 
 # Main: Q&A
 st.header("Query the Collection")
