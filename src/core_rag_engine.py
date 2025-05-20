@@ -1,3 +1,5 @@
+# src/core_rag_engine.py
+
 import os
 import logging
 import tempfile
@@ -18,19 +20,28 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
 
-from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
-from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain.chains import LLMChain
-from langchain_core.pydantic_v1 import BaseModel, Field
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 
-# Optional support for Streamlit uploads
+from langgraph.graph import StateGraph, END
+
+# Optional support for Streamlit file uploads
 try:
-    from streamlit.runtime.uploaded_file_manager import UploadedFile
+    from streamlit.runtime.uploaded_file_manager import UploadedFile  # type: ignore
 except ImportError:
     UploadedFile = None
 
+# Try token-based splitting
+try:
+    import tiktoken
+except ImportError:
+    tiktoken = None
+
+# Load environment variables once
 load_dotenv()
 
+# Prompt template for final answer generation
 PROMPT_TEMPLATE = (
     "Answer the question based only on the following context.\n"
     "If the context does not contain the answer, state that you don't know.\n\n"
@@ -39,16 +50,7 @@ PROMPT_TEMPLATE = (
     "Answer:"
 )
 
-try:
-    import tiktoken
-except ImportError:
-    tiktoken = None
-
-
 class CoreGraphState(TypedDict):
-    """
-    Placeholder state for future LangGraph-based workflows.
-    """
     question: str
     original_question: Optional[str]
     documents: List[Document]
@@ -57,17 +59,14 @@ class CoreGraphState(TypedDict):
     generation: str
     retries: int
     run_web_search: str  # "Yes" or "No"
+    relevance_check_passed: Optional[bool]
     error_message: Optional[str]
     collection_name: Optional[str]
 
 
 class CoreRAGEngine:
     """
-    Core RAG engine:
-      - Ingest documents from URLs, PDFs, text files, or Streamlit uploads
-      - Split and index into Chroma vector stores with persistence
-      - Answer queries by retrieving relevant chunks and invoking an LLM
-      - Stub for future full LangGraph workflows
+    Core RAG engine: ingestion, indexing, and adaptive querying via LangGraph.
     """
 
     def __init__(
@@ -85,7 +84,7 @@ class CoreRAGEngine:
         openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY"),
         google_api_key: Optional[str] = os.getenv("GOOGLE_API_KEY"),
     ):
-        # Save configuration
+        # Configuration
         self.llm_provider = llm_provider
         self.llm_model_name = llm_model_name
         self.embedding_provider = embedding_provider
@@ -98,47 +97,38 @@ class CoreRAGEngine:
         self.openai_api_key = openai_api_key
         self.google_api_key = google_api_key
 
-        # Determine persistence directory base
-        if persist_directory_base:
-            self.persist_directory_base = persist_directory_base
-        else:
-            system_temp = tempfile.gettempdir()
-            self.persist_directory_base = os.path.join(system_temp, "core_rag_engine_chroma")
+        # Persistence directory
+        base = persist_directory_base or tempfile.gettempdir()
+        self.persist_directory_base = os.path.join(base, "core_rag_engine_chroma")
         os.makedirs(self.persist_directory_base, exist_ok=True)
 
-        # Setup logger
+        # Logger
         self._setup_logger()
 
-        # Initialize LLMs
+        # LLMs
         self.llm = self._init_llm(use_json_format=False)
         self.json_llm = self._init_llm(use_json_format=True)
 
-        # Initialize embedding model
+        # Embeddings
         self.embedding_model = self._init_embedding_model()
 
-        # Initialize text splitter
+        # Splitter and search tool
         self.text_splitter = self._init_text_splitter()
-
-        # Initialize optional web search tool
         self.search_tool = self._init_search_tool()
 
-        # Build the document relevance grader chain
+        # Chains
         self.document_relevance_grader_chain = self._create_document_relevance_grader_chain()
+        self.query_rewriter_chain         = self._create_query_rewriter_chain()
+        self.answer_generation_chain      = self._create_answer_generation_chain()
 
+        # Compile workflow
+        self._compile_rag_workflow()
 
-        # Storage for each collection's vector store and retriever
+        # Storage for indexes
         self.vectorstores: Dict[str, Chroma] = {}
         self.retrievers: Dict[str, Any] = {}
 
-        # Placeholder for future workflow
-        self.rag_workflow: Optional[Any] = None
-
-        self.logger.info(
-            f"Engine initialized: LLM={self.llm_provider}/{self.llm_model_name}, "
-            f"Embeddings={self.embedding_provider}/{self.embedding_model_name}, "
-            f"Chunks={self.chunk_size}/{self.chunk_overlap}, "
-            f"Persistence={self.persist_directory_base}"
-        )
+        self.logger.info("CoreRAGEngine initialized and workflow compiled.")
 
     def _setup_logger(self) -> None:
         logger = logging.getLogger(self.__class__.__name__)
@@ -154,122 +144,80 @@ class CoreRAGEngine:
     # LLM Initialization
     # ---------------------
     def _init_llm(self, use_json_format: bool) -> Any:
-        provider = self.llm_provider.lower()
-
-        if provider == "openai":
+        p = self.llm_provider.lower()
+        if p == "openai":
             return self._init_openai_llm(use_json_format)
-        if provider == "ollama":
+        if p == "ollama":
             return self._init_ollama_llm(use_json_format)
-        if provider == "google":
+        if p == "google":
             return self._init_google_llm(use_json_format)
-
-        raise ValueError(f"Unsupported LLM provider: {provider}")
+        raise ValueError(f"Unsupported LLM provider: {p}")
 
     def _init_openai_llm(self, use_json: bool) -> ChatOpenAI:
         if not self.openai_api_key:
             self.logger.error("OPENAI_API_KEY missing")
             raise ValueError("OPENAI_API_KEY is required")
-
-        constructor_args: Dict[str, Any] = {
+        args: Dict[str, Any] = {
             "model": self.llm_model_name,
             "temperature": self.temperature,
-            "openai_api_key": self.openai_api_key,
+            "openai_api_key": self.openai_api_key
         }
-
         if use_json:
-            name = self.llm_model_name.lower()
-            is_json_model = (
-                "gpt-4o" in name
-                or "gpt-4" in name
-                or name.startswith("gpt-3.5-turbo-")
-            )
-            constructor_args["model_kwargs"] = {"response_format": {"type": "json_object"}}
-            if is_json_model:
-                self.logger.info(f"Native JSON mode enabled for {self.llm_model_name}")
-            else:
-                self.logger.warning(
-                    f"JSON mode forced for {self.llm_model_name}; actual support may vary"
-                )
-
-        try:
-            return ChatOpenAI(**constructor_args)
-        except Exception as e:
-            self.logger.error(f"OpenAI LLM init failed for model {self.llm_model_name}: {e}")
-            raise ValueError(f"Failed to initialize OpenAI LLM {self.llm_model_name}") from e
+            args["model_kwargs"] = {"response_format": {"type": "json_object"}}
+            self.logger.info(f"JSON mode enabled for {self.llm_model_name}")
+        return ChatOpenAI(**args)
 
     def _init_ollama_llm(self, use_json: bool) -> ChatOllama:
         fmt = "json" if use_json else None
-        try:
-            return ChatOllama(model=self.llm_model_name, temperature=self.temperature, format=fmt)
-        except Exception as e:
-            self.logger.error(f"Ollama LLM init failed: {e}")
-            raise
+        return ChatOllama(model=self.llm_model_name, temperature=self.temperature, format=fmt)
 
     def _init_google_llm(self, use_json: bool) -> ChatGoogleGenerativeAI:
         if not self.google_api_key:
             self.logger.error("GOOGLE_API_KEY missing")
             raise ValueError("GOOGLE_API_KEY is required")
-        try:
-            return ChatGoogleGenerativeAI(
-                model=self.llm_model_name,
-                temperature=self.temperature,
-                google_api_key=self.google_api_key,
-                convert_system_message_to_human=True
-            )
-        except Exception as e:
-            self.logger.error(f"Google LLM init failed: {e}")
-            raise
+        return ChatGoogleGenerativeAI(
+            model=self.llm_model_name,
+            temperature=self.temperature,
+            google_api_key=self.google_api_key,
+            convert_system_message_to_human=True
+        )
 
     # ---------------------
     # Embedding Initialization
     # ---------------------
     def _init_embedding_model(self) -> Any:
-        provider = self.embedding_provider.lower()
-
-        if provider == "openai":
+        p = self.embedding_provider.lower()
+        if p == "openai":
             return self._init_openai_embeddings()
-        if provider == "gpt4all":
+        if p == "gpt4all":
             return self._init_gpt4all_embeddings()
-        if provider == "google":
+        if p == "google":
             return self._init_google_embeddings()
-
-        raise ValueError(f"Unsupported embedding provider: {provider}")
+        raise ValueError(f"Unsupported embedding provider: {p}")
 
     def _init_openai_embeddings(self) -> OpenAIEmbeddings:
         if not self.openai_api_key:
             self.logger.error("OPENAI_API_KEY missing for embeddings")
             raise ValueError("OPENAI_API_KEY is required for embeddings")
         model = self.embedding_model_name or "text-embedding-3-small"
-        try:
-            return OpenAIEmbeddings(openai_api_key=self.openai_api_key, model=model)
-        except Exception as e:
-            self.logger.error(f"OpenAI Embeddings init failed: {e}")
-            raise
+        return OpenAIEmbeddings(openai_api_key=self.openai_api_key, model=model)
 
     def _init_gpt4all_embeddings(self) -> GPT4AllEmbeddings:
-        try:
-            return GPT4AllEmbeddings()
-        except Exception as e:
-            self.logger.error(f"GPT4All Embeddings init failed: {e}")
-            raise
+        return GPT4AllEmbeddings()
 
     def _init_google_embeddings(self) -> GoogleGenerativeAIEmbeddings:
         if not self.google_api_key:
             self.logger.error("GOOGLE_API_KEY missing for embeddings")
             raise ValueError("GOOGLE_API_KEY is required for embeddings")
         model = self.embedding_model_name or "models/embedding-001"
-        try:
-            return GoogleGenerativeAIEmbeddings(model=model, google_api_key=self.google_api_key)
-        except Exception as e:
-            self.logger.error(f"Google Embeddings init failed: {e}")
-            raise
+        return GoogleGenerativeAIEmbeddings(model=model, google_api_key=self.google_api_key)
 
     # ---------------------
-    # Text Splitter Initialization
+    # Text Splitter
     # ---------------------
     def _init_text_splitter(self) -> RecursiveCharacterTextSplitter:
-        use_tiktoken = tiktoken is not None and self.llm_provider.lower() == "openai"
-        if use_tiktoken:
+        use_tok = tiktoken is not None and self.llm_provider.lower() == "openai"
+        if use_tok:
             try:
                 return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
                     model_name=self.llm_model_name,
@@ -285,80 +233,184 @@ class CoreRAGEngine:
         )
 
     # ---------------------
-    # Search Tool Initialization
+    # Search Tool
     # ---------------------
     def _init_search_tool(self) -> Optional[TavilySearchResults]:
         if not self.tavily_api_key:
             self.logger.warning("TAVILY_API_KEY missing, web search disabled")
             return None
-        try:
-            return TavilySearchResults(api_key=self.tavily_api_key)
-        except Exception as e:
-            self.logger.error(f"TavilySearchResults init failed: {e}")
-            return None
+        return TavilySearchResults(api_key=self.tavily_api_key)
 
-        def _create_document_relevance_grader_chain(self) -> Any:
-        """
-        Chain that decides if a document chunk is relevant to the question.
-        Inputs:
-          - question (str)
-          - document_context (str)
-        Output: "yes" or "no"
-        """
+    # ---------------------
+    # Chain Factories
+    # ---------------------
+    def _create_document_relevance_grader_chain(self) -> LLMChain:
         prompt = ChatPromptTemplate.from_template(
-            "Given the question and a document excerpt, answer 'yes' if the excerpt is relevant to answering the question, otherwise answer 'no'.\n\n"
-            "Question: {question}\n"
-            "Excerpt: {document_context}\n\n"
-            "Relevant?"
+            "Given the question and a document excerpt, answer 'yes' if the excerpt is relevant, otherwise 'no'.\n\n"
+            "Question: {question}\nExcerpt: {document_context}\n\nRelevant?"
         )
+        return LLMChain(llm=self.json_llm, prompt=prompt, output_parser=StrOutputParser())
 
-        chain = LLMChain(
-            llm=self.json_llm,
-            prompt=prompt,
-            output_parser=StrOutputParser()
+    def _create_query_rewriter_chain(self) -> LLMChain:
+        prompt = ChatPromptTemplate.from_template(
+            "Rewrite the question to improve retrieval clarity.\n\nOriginal: {question}\n\nRewritten:"
         )
+        return LLMChain(llm=self.llm, prompt=prompt, output_parser=StrOutputParser())
 
-        return chain
-
-    # ---------------------
-    # Persistence Helpers
-    # ---------------------
-    def _get_persist_dir(self, collection_name: str) -> str:
-        return os.path.join(self.persist_directory_base, collection_name)
-
-    def _init_or_load_vectorstore(self, collection_name: str, recreate: bool) -> None:
-        persist_dir = self._get_persist_dir(collection_name)
-
-        if recreate and os.path.exists(persist_dir):
-            shutil.rmtree(persist_dir)
-
-        if os.path.exists(persist_dir) and collection_name in self.vectorstores:
-            return
-
-        if os.path.exists(persist_dir):
-            vs = Chroma(
-                collection_name=collection_name,
-                embedding_function=self.embedding_model,
-                persist_directory=persist_dir
-            )
-            self.vectorstores[collection_name] = vs
-            self.retrievers[collection_name] = vs.as_retriever()
-        else:
-            self.vectorstores[collection_name] = None
-            self.retrievers[collection_name] = None
+    def _create_answer_generation_chain(self) -> LLMChain:
+        prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
+        return LLMChain(llm=self.llm, prompt=prompt, output_parser=StrOutputParser())
 
     # ---------------------
-    # Document I/O
+    # Wrapper Node Methods
+    # ---------------------
+    def _retrieve_node(self, state: CoreGraphState) -> CoreGraphState:
+        name = state.get("collection_name") or self.default_collection_name
+        self._init_or_load_vectorstore(name, recreate=False)
+        retriever = self.retrievers.get(name)
+        if not retriever:
+            state["documents"] = []
+            state["context"] = ""
+            return state
+        docs = retriever.get_relevant_documents(state["question"])
+        state["documents"] = docs
+        state["context"] = "\n\n".join(d.page_content for d in docs)
+        return state
+
+    def _grade_documents_node(self, state: CoreGraphState) -> CoreGraphState:
+        self.logger.info("NODE: Grading documents")
+        question = state.get("original_question") or state["question"]
+        context = state.get("context", "")
+        if not context.strip():
+            state["relevance_check_passed"] = False
+            return state
+        try:
+            result = self.document_relevance_grader_chain.invoke({
+                "question": question,
+                "document_context": context
+            })
+            decision = result.get("text", "").strip().lower()
+            if decision == "yes":
+                state["relevance_check_passed"] = True
+            else:
+                state["relevance_check_passed"] = False
+                state["documents"] = []
+                state["context"] = "Retrieved content not relevant."
+        except Exception as e:
+            self.logger.error(f"Grading error: {e}")
+            state["relevance_check_passed"] = False
+            state["error_message"] = str(e)
+        return state
+
+    def _rewrite_query_node(self, state: CoreGraphState) -> CoreGraphState:
+        self.logger.info("NODE: Rewriting query")
+        original = state.get("original_question") or state["question"]
+        try:
+            result = self.query_rewriter_chain.invoke({"question": original})
+            rewritten = result.get("text", "").strip()
+            if rewritten and rewritten.lower() != original.lower():
+                state["question"] = rewritten
+            else:
+                state["question"] = original
+        except Exception as e:
+            self.logger.error(f"Rewrite error: {e}")
+            state["question"] = original
+            state["error_message"] = str(e)
+        return state
+
+    def _web_search_node(self, state: CoreGraphState) -> CoreGraphState:
+        if state.get("run_web_search") != "Yes":
+            return state
+        q = state["question"]
+        if not self.search_tool:
+            state["context"] = state.get("context", "") or "Web search tool unavailable."
+            return state
+        try:
+            raw = self.search_tool.invoke({"query": q})
+            docs: List[Document] = []
+            if isinstance(raw, list):
+                for item in raw:
+                    if isinstance(item, dict) and "content" in item:
+                        docs.append(Document(page_content=item["content"],
+                                             metadata={"source": item.get("url", "")}))
+            state["web_search_results"] = docs
+            if docs:
+                state["documents"] = docs
+                state["context"] = "\n\n".join(d.page_content for d in docs)
+            elif not state.get("documents"):
+                state["context"] = "Web search returned no results."
+        except Exception as e:
+            self.logger.error(f"Web search error: {e}")
+            state["error_message"] = str(e)
+            if not state.get("documents"):
+                state["context"] = "Error during web search."
+        return state
+
+    def _generate_answer_node(self, state: CoreGraphState) -> CoreGraphState:
+        self.logger.info("NODE: Generating answer")
+        question = state["question"]
+        context = state.get("context", "")
+        try:
+            result = self.answer_generation_chain.invoke({
+                "question": question,
+                "context": context
+            })
+            state["generation"] = result.get("text", "").strip()
+        except Exception as e:
+            self.logger.error(f"Generation error: {e}")
+            state["generation"] = "Error generating answer."
+            state["error_message"] = str(e)
+        return state
+
+    def _route_after_grading(self, state: CoreGraphState) -> str:
+        passed = state.get("relevance_check_passed", False)
+        retries = state.get("retries", 0)
+        self.logger.info(f"Routing after grading: passed={passed}, retries={retries}")
+        if passed:
+            return "generate_answer"
+        if retries < 1:
+            state["retries"] = retries + 1
+            return "rewrite_query"
+        if self.search_tool:
+            state["run_web_search"] = "Yes"
+            return "web_search"
+        state["context"] = state.get("context", "") or "No relevant information found."
+        return "generate_answer"
+
+    # ---------------------
+    # Workflow Compilation
+    # ---------------------
+    def _compile_rag_workflow(self) -> None:
+        graph = StateGraph(CoreGraphState)
+        graph.add_node("retrieve", self._retrieve_node)
+        graph.add_node("grade_documents", self._grade_documents_node)
+        graph.add_node("rewrite_query", self._rewrite_query_node)
+        graph.add_node("web_search", self._web_search_node)
+        graph.add_node("generate_answer", self._generate_answer_node)
+
+        graph.set_entry_point("retrieve")
+
+        graph.add_edge("retrieve", "grade_documents")
+        graph.add_conditional_edges(
+            "grade_documents",
+            self._route_after_grading,
+            {
+                "generate_answer": "generate_answer",
+                "rewrite_query": "rewrite_query",
+                "web_search": "web_search"
+            }
+        )
+        graph.add_edge("rewrite_query", "retrieve")
+        graph.add_edge("web_search", "generate_answer")
+        graph.add_edge("generate_answer", END)
+
+        self.rag_workflow = graph.compile()
+        self.logger.info("RAG workflow compiled successfully.")
+
+    # ---------------------
+    # Public API: Ingestion
     # ---------------------
     def load_documents(self, source_type: str, source_value: Any) -> List[Document]:
-        """
-        Load documents from:
-          - "url": source_value is URL str
-          - "pdf_path": source_value is file path str
-          - "text_path": source_value is file path str
-          - "uploaded_pdf": source_value is Streamlit UploadedFile
-        """
-        # Instantiate loader
         try:
             if source_type == "url":
                 loader = WebBaseLoader(web_paths=[source_value])
@@ -381,16 +433,15 @@ class CoreRAGEngine:
                 self.logger.error(f"Unsupported source_type: {source_type}")
                 return []
         except Exception as e:
-            self.logger.error(f"Error creating loader for {source_type}: {e}")
+            self.logger.error(f"Error creating loader: {e}")
             return []
 
-        # Load docs
         try:
             docs = loader.load()
             self.logger.info(f"Loaded {len(docs)} docs from {source_type}")
             return docs
         except Exception as e:
-            self.logger.error(f"Error loading docs from {source_type}: {e}")
+            self.logger.error(f"Error loading docs: {e}")
             return []
         finally:
             if source_type == "uploaded_pdf" and 'tmp' in locals():
@@ -399,74 +450,53 @@ class CoreRAGEngine:
                 except Exception:
                     pass
 
-    def split_documents(self, documents: List[Document]) -> List[Document]:
-        """
-        Split loaded documents into smaller chunks.
-        """
-        if not documents:
+    def split_documents(self, docs: List[Document]) -> List[Document]:
+        if not docs:
             return []
-        chunks = self.text_splitter.split_documents(documents)
+        chunks = self.text_splitter.split_documents(docs)
         self.logger.info(f"Split into {len(chunks)} chunks")
         return chunks
 
-    # ---------------------
-    # Indexing
-    # ---------------------
-    def index_documents(self, documents: List[Document], collection_name: str, recreate: bool = False) -> None:
-        """
-        Index document chunks into Chroma. Recreate store if requested.
-        """
-        self._init_or_load_vectorstore(collection_name, recreate)
-        vs = self.vectorstores[collection_name]
-        persist_dir = self._get_persist_dir(collection_name)
-
+    def index_documents(self, docs: List[Document], name: str, recreate: bool = False) -> None:
+        self._init_or_load_vectorstore(name, recreate)
+        vs = self.vectorstores.get(name)
+        d = self._get_persist_dir(name)
         if vs is None or recreate:
             vs_new = Chroma.from_documents(
-                documents=documents,
+                documents=docs,
                 embedding=self.embedding_model,
-                collection_name=collection_name,
-                persist_directory=persist_dir
+                collection_name=name,
+                persist_directory=d
             )
-            self.vectorstores[collection_name] = vs_new
-            self.retrievers[collection_name] = vs_new.as_retriever()
-            self.logger.info(f"Created new vector store '{collection_name}'")
+            self.vectorstores[name] = vs_new
+            self.retrievers[name] = vs_new.as_retriever()
+            self.logger.info(f"Created vector store '{name}'")
         else:
-            vs.add_documents(documents=documents)
-            self.logger.info(f"Added {len(documents)} docs to '{collection_name}'")
+            vs.add_documents(docs)
+            self.logger.info(f"Added {len(docs)} docs to '{name}'")
 
-    # ---------------------
-    # Public API: ingest
-    # ---------------------
     def ingest(
         self,
         sources: Union[Dict[str, Any], List[Dict[str, Any]]],
         collection_name: Optional[str] = None,
         recreate_collection: bool = False
     ) -> None:
-        """
-        Ingest one or more sources into the named collection.
-        Each source is a dict: {"type": ..., "value": ...}.
-        """
         name = collection_name or self.default_collection_name
         if not isinstance(sources, list):
             sources = [sources]
-
         all_chunks: List[Document] = []
-        for src in sources:
-            src_type = src.get("type")
-            src_val = src.get("value")
-            raw = self.load_documents(src_type, src_val)
+        for s in sources:
+            stype = s.get("type"); sval = s.get("value")
+            raw = self.load_documents(stype, sval)
             chunks = self.split_documents(raw)
             all_chunks.extend(chunks)
-
         if all_chunks:
             self.index_documents(all_chunks, name, recreate_collection)
         elif recreate_collection:
-            # Clear existing store if requested
             self._init_or_load_vectorstore(name, recreate=True)
 
     # ---------------------
-    # Public API: answer_query
+    # Public API: Legacy Query
     # ---------------------
     def answer_query(
         self,
@@ -474,47 +504,56 @@ class CoreRAGEngine:
         collection_name: Optional[str] = None,
         top_k: int = 4
     ) -> Dict[str, Any]:
-        """
-        Retrieve context and generate an answer.
-        Returns {"answer": str, "sources": List[{"source":..., "preview":...}]}.
-        """
         name = collection_name or self.default_collection_name
         self._init_or_load_vectorstore(name, recreate=False)
         retriever = self.retrievers.get(name)
         if not retriever:
-            msg = "No documents indexed in this collection."
+            msg = "No documents indexed."
             self.logger.warning(msg)
             return {"answer": msg, "sources": []}
-
         docs = retriever.get_relevant_documents(question)[:top_k]
-        context = "\n\n".join(doc.page_content for doc in docs)
+        context = "\n\n".join(d.page_content for d in docs)
         prompt = PROMPT_TEMPLATE.format(context=context, question=question)
-
         try:
-            answer = self.llm.predict(prompt)
+            ans = self.llm.predict(prompt)
         except Exception as e:
-            self.logger.error(f"LLM call failed: {e}")
+            self.logger.error(f"LLM error: {e}")
             return {"answer": "Error generating answer.", "sources": []}
-
-        sources_info = []
-        for doc in docs:
-            src = doc.metadata.get("source", "unknown")
-            preview = doc.page_content[:200] + "..."
-            sources_info.append({"source": src, "preview": preview})
-
-        return {"answer": answer.strip(), "sources": sources_info}
+        sources = [
+            {"source": d.metadata.get("source", "unknown"),
+             "preview": d.page_content[:200] + "..."}
+            for d in docs
+        ]
+        return {"answer": ans.strip(), "sources": sources}
 
     # ---------------------
-    # Public API: full workflow stub
+    # Public API: Full Workflow
     # ---------------------
     def run_full_rag_workflow(
         self,
         question: str,
         collection_name: Optional[str] = None
     ) -> Dict[str, Any]:
-        """
-        Placeholder for future LangGraph-based RAG workflow.
-        Currently delegates to basic answer_query.
-        """
-        self.logger.info("Running full RAG workflow (stub)")
-        return self.answer_query(question, collection_name)
+        name = collection_name or self.default_collection_name
+        initial_state: CoreGraphState = {
+            "question": question,
+            "original_question": question,
+            "documents": [],
+            "context": "",
+            "web_search_results": None,
+            "generation": "",
+            "retries": 0,
+            "run_web_search": "No",
+            "relevance_check_passed": None,
+            "error_message": None,
+            "collection_name": name
+        }
+        final = self.rag_workflow.invoke(initial_state)
+        answer = final.get("generation", "")
+        docs   = final.get("documents", [])
+        sources = [
+            {"source": d.metadata.get("source", "unknown"),
+             "preview": d.page_content[:200] + "..."}
+            for d in docs
+        ]
+        return {"answer": answer, "sources": sources}
