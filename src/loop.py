@@ -1,119 +1,204 @@
-"""
-loop.py
-
-Implements an agent loop workflow using LangGraph.
-The workflow repeatedly invokes a JSON-based chat agent (created via create_json_chat_agent)
-and then executes tool actions as directed until the agent finishes.
-"""
-
-import json
 import os
-import operator
-from typing import List, Union, TypedDict
+import logging
+from typing import List, Optional, Dict, Any
 
 from langchain.agents import create_json_chat_agent, AgentAction, AgentFinish
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
-from langchain_core.messages import AIMessage, HumanMessage, ChatMessage, SystemMessage, FunctionMessage, ToolMessage, BaseMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage
 from langchain_experimental.utilities import PythonREPL
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_openai import ChatOpenAI
+from langchain.tools import Tool
 from langgraph.prebuilt.tool_executor import ToolExecutor
-from langgraph.graph import END, StateGraph
+from langgraph.graph import StateGraph, END
 
-class AgentLoopState(TypedDict):
-    input: str
-    chat_history: List[BaseMessage]
-    agent_outcome: Union[AgentAction, AgentFinish, None]
-    intermediate_steps: List[tuple[AgentAction, str]]
+from src.core_rag_engine import CoreRAGEngine
+from src.stock import fetch_stock_news_documents
+from src.scraper import scrape_urls_as_documents
+
+
+class AgentLoopState(Dict[str, Any]):
+    """
+    State dictionary for the agent loop.
+    Keys:
+      - input: str (the user's high-level goal)
+      - chat_history: List[BaseMessage]
+      - agent_outcome: AgentAction | AgentFinish | None
+      - intermediate_steps: List[ tuple(AgentAction, str) ]
+    """
+    pass
+
 
 class AgentLoopWorkflow:
-    def __init__(self, openai_api_key: str, model: str = "gpt-4"):
+    def __init__(
+        self,
+        openai_api_key: str,
+        model: str = "gpt-4o",
+        core_rag_engine_instance: Optional[CoreRAGEngine] = None,
+        enable_tavily_search: bool = True,
+        enable_python_repl: bool = False,
+        custom_external_tools: Optional[List[Tool]] = None
+    ):
         self.openai_api_key = openai_api_key
-        self.model = model
+        self.model_name = model
+        self.core_rag_engine = core_rag_engine_instance
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger.setLevel(logging.INFO)
 
-        self.search_tool = TavilySearchResults(max_results=1)
-        self.repl = PythonREPL()
+        # Initialize the chat model
+        self.chat_model = ChatOpenAI(model=self.model_name openai_api_key=self.openai_api_key)
 
-        self.chat_model = ChatOpenAI(openai_api_key=self.openai_api_key, model=self.model)
-        self.python_repl_tool = self._build_python_repl_tool()
+        # Build tool list
+        self.tools: List[Tool] = []
 
-        self.tools = [self.search_tool, self.python_repl_tool]
+        # Tavily search
+        if enable_tavily_search:
+            tavily_key = os.getenv("TAVILY_API_KEY")
+            if tavily_key:
+                self.tools.append(TavilySearchResults(api_key=tavily_key, max_results=3))
+            else:
+                self.logger.warning("TAVILY_API_KEY not set; TavilySearchResults tool disabled.")
 
-        self.prompt = ChatPromptTemplate(input_variables=["agent_scratchpad", "input", "tool_names", "tools"],
-                                         messages=[SystemMessage(content="Assistant is a large language model trained by OpenAI. It can answer questions and use tools."),
-                                                   MessagesPlaceholder(variable_name="chat_history", optional=True),
-                                                   HumanMessage(content=("TOOLS\n------\n"
-                                                                         "Available tools: {tools}\n\n"
-                                                                         "When responding, output a JSON with an action and action_input.\n\n"
-                                                                         "USER'S INPUT\n--------------------\n{input}")),
-                                                   MessagesPlaceholder(variable_name="agent_scratchpad")])
+        # Python REPL
+        if enable_python_repl:
+            self.repl = PythonREPL()
+            self.tools.append(self._build_python_repl_tool())
 
-        self.agent_runnable = create_json_chat_agent(self.chat_model, self.tools, self.prompt)
+        # CoreRAGEngine tools
+        if self.core_rag_engine:
+            self.tools.extend(self._create_core_rag_engine_tools())
+
+        # Data feed tools
+        self.tools.extend(self._create_data_feed_tools())
+
+        # Custom external tools
+        if custom_external_tools:
+            self.tools.extend(custom_external_tools)
+
+        self.logger.info(f"Agent initialized with {len(self.tools)} tools.")
+
+        # System prompt guiding multi-step usage
+        system_message = """ You are the InsightEngine Agent. Your job is to fulfill complex tasks by planning and using tools intelligently. For data acquisition:
+        - Use FetchStockNews and ScrapeWebURLs to retrieve raw documents.
+        - Then use InsightEngineIngest to add them into a named collection.
+        For reasoning:
+        - Use InsightEngineRAGWorkflow with a question and collection_name to get answers from ingested content.
+        Always think step-by-step:
+        1. Plan which tool to call.
+        2. Execute the tool.
+        3. Observe output, then plan next step.
+        Provide final answer when finished.
+        """
+
+        self.prompt = ChatPromptTemplate(
+            input_variables=["input", "chat_history", "tool_names", "agent_scratchpad"],
+            messages=[
+                SystemMessage(content=system_message),
+                MessagesPlaceholder(variable_name="chat_history", optional=True),
+                HumanMessage(content=(
+                    "TOOLS\n------\n"
+                    "Available tools: {tool_names}\n\n"
+                    "When you call a tool, respond with a JSON object "
+                    "with 'action' and 'action_input'.\n\n"
+                    "USER GOAL\n----------\n{input}"
+                )),
+                MessagesPlaceholder(variable_name="agent_scratchpad")
+            ]
+        )
+
+        # Create the agent and executor
+        self.agent_runnable = create_json_chat_agent(
+            llm=self.chat_model,
+            tools=self.tools,
+            prompt=self.prompt
+        )
         self.tool_executor = ToolExecutor(self.tools)
 
-        # Build and compile the workflow graph once.
+        # Compile the LangGraph workflow
         self.compiled_graph = self.build_workflow().compile()
 
-    def _build_python_repl_tool(self):
-        """
-        Define and return a python_repl tool that executes code via the PythonREPL.
-        """
-        @tool
-        def python_repl(code: str) -> str:
-            """
-            Execute the provided Python code and return its output.
-            """
-            try:
-                result = self.repl.run(code)
-                return f"Successfully executed:\n```python\n{code}\n```\nStdout: {result}"
-            except Exception as e:
-                return f"Error executing code: {str(e)}"
-        return python_repl
+    def _build_python_repl_tool(self) -> Tool:
+        return Tool(
+            name="python_repl",
+            func=self.repl.run,
+            description="Executes Python code and returns stdout."
+        )
 
-    def run_agent(self, data: dict) -> dict:
-        """
-        Invoke the chat agent and return its outcome.
-        Raises an exception if the agent call fails.
-        """
-        try:
-            outcome = self.agent_runnable.invoke(data)
-            return {"agent_outcome": outcome}
-        except Exception as e:
-            raise Exception(f"Error in run_agent: {str(e)}")  # Re-raise to halt workflow.
+    def _create_core_rag_engine_tools(self) -> List[Tool]:
+        tools: List[Tool] = []
 
-    def execute_tools(self, data: dict) -> dict:
-        """
-        Execute the tool action provided by the agent.
-        This function automatically executes the tool action without user confirmation.
-        """
-        agent_action = data.get("agent_outcome")
-        # Validate that the agent_action has the expected attributes.
-        if not hasattr(agent_action, "tool") or not hasattr(agent_action, "tool_input"):
-            raise ValueError("Agent action missing tool information.")
-        output = self.tool_executor.invoke(agent_action)
-        if "intermediate_steps" not in data:
-            data["intermediate_steps"] = []
-        data["intermediate_steps"].append((agent_action, str(output)))
-        return data
+        # Run RAG workflow tool
+        tools.append(Tool(
+            name="InsightEngineRAGWorkflow",
+            func=self.core_rag_engine.run_full_rag_workflow,
+            description=(
+                "Answer questions using the adaptive RAG workflow. "
+                "Input: {'question': str, 'collection_name': Optional[str]}. "
+                "Returns a dict with 'answer' and 'sources'."
+            )
+        ))
 
-    def should_continue(self, data: dict) -> str:
-        """
-        Decide whether to continue the loop or finish.
-        Returns "end" if the agent outcome is an AgentFinish instance; otherwise, "continue".
-        """
-        if isinstance(data.get("agent_outcome"), AgentFinish):
-            return "end"
-        else:
-            return "continue"
+        # Ingest tool
+        tools.append(Tool(
+            name="InsightEngineIngest",
+            func=self.core_rag_engine.ingest,
+            description=(
+                "Ingest documents or sources into a collection. "
+                "Input: { 'sources': List[{'type':str,'value':Any}], "
+                "'direct_documents': Optional[List[Document]], "
+                "'collection_name': Optional[str], "
+                "'recreate_collection': Optional[bool] }."
+            )
+        ))
+
+        self.logger.info(f"Created {len(tools)} CoreRAGEngine tools.")
+        return tools
+
+    def _create_data_feed_tools(self) -> List[Tool]:
+        tools: List[Tool] = []
+
+        tools.append(Tool(
+            name="FetchStockNews",
+            func=fetch_stock_news_documents,
+            description=(
+                "Fetch recent stock news articles. "
+                "Input: {'tickers_input': str or List[str], 'max_articles_per_ticker': int}. "
+                "Returns List[Document]."
+            )
+        ))
+
+        tools.append(Tool(
+            name="ScrapeWebURLs",
+            func=scrape_urls_as_documents,
+            description=(
+                "Scrape content from given web URLs. "
+                "Input: {'urls': List[str], 'user_goal_for_scraping': Optional[str]}. "
+                "Returns List[Document]."
+            )
+        ))
+
+        self.logger.info(f"Created {len(tools)} data feed tools.")
+        return tools
+
+    def run_agent(self, state: AgentLoopState) -> AgentLoopState:
+        outcome = self.agent_runnable.invoke({
+            "input": state["input"],
+            "chat_history": state.get("chat_history", []),
+            "agent_scratchpad": []
+        })
+        state["agent_outcome"] = outcome
+        return state
+
+    def execute_tools(self, state: AgentLoopState) -> AgentLoopState:
+        action: AgentAction = state["agent_outcome"]
+        result = self.tool_executor.invoke(action)
+        state.setdefault("intermediate_steps", []).append((action, str(result)))
+        return state
+
+    def should_continue(self, state: AgentLoopState) -> str:
+        return "end" if isinstance(state.get("agent_outcome"), AgentFinish) else "continue"
 
     def build_workflow(self) -> StateGraph:
-        """
-        Build and return the workflow graph.
-        The graph contains two nodes:
-          - "agent": runs the chat agent.
-          - "action": executes the tool action.
-        The graph loops until the agent finishes.
-        """
         graph = StateGraph(AgentLoopState)
         graph.add_node("agent", self.run_agent)
         graph.add_node("action", self.execute_tools)
@@ -126,29 +211,18 @@ class AgentLoopWorkflow:
         graph.add_edge("action", "agent")
         return graph
 
-    def run_workflow(self, data: dict) -> dict:
+    def run_workflow(self, goal: str) -> AgentLoopState:
         """
-        Run the workflow until completion using the precompiled graph.
-        Returns the final state.
+        Public method: run the agent on a high-level goal.
+        Returns the final state containing intermediate_steps and agent_outcome.
         """
+        initial_state: AgentLoopState = {
+            "input": goal,
+            "chat_history": [],
+            "agent_outcome": None,
+            "intermediate_steps": []
+        }
         final_state = None
-        for state in self.compiled_graph.stream(data):
-            final_state = state
+        for st in self.compiled_graph.stream(initial_state):
+            final_state = st
         return final_state
-
-# --- Main Execution for Testing ---
-if __name__ == "__main__":
-    # Load API key from .env
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise Exception("OPENAI_API_KEY not set in environment.")
-    # Define initial input.
-    inputs = {"input": "what is the weather in taiwan", "chat_history": []}
-    # Instantiate the workflow with the provided API key and model.
-    loop_workflow = AgentLoopWorkflow(openai_api_key=api_key, model="gpt-4")
-    result = loop_workflow.run_workflow(inputs)
-    # Print the final output if the workflow ended properly.
-    if isinstance(result.get("agent_outcome"), AgentFinish):
-        print(result["agent_outcome"].return_values["output"])
-    else:
-        print("Workflow did not finish properly.")
