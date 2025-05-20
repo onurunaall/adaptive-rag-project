@@ -18,6 +18,11 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
 
+from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
+from langchain.chains import LLMChain
+from langchain_core.pydantic_v1 import BaseModel, Field
+
 # Optional support for Streamlit uploads
 try:
     from streamlit.runtime.uploaded_file_manager import UploadedFile
@@ -116,6 +121,10 @@ class CoreRAGEngine:
 
         # Initialize optional web search tool
         self.search_tool = self._init_search_tool()
+
+        # Build the document relevance grader chain
+        self.document_relevance_grader_chain = self._create_document_relevance_grader_chain()
+
 
         # Storage for each collection's vector store and retriever
         self.vectorstores: Dict[str, Chroma] = {}
@@ -287,6 +296,29 @@ class CoreRAGEngine:
         except Exception as e:
             self.logger.error(f"TavilySearchResults init failed: {e}")
             return None
+
+        def _create_document_relevance_grader_chain(self) -> Any:
+        """
+        Chain that decides if a document chunk is relevant to the question.
+        Inputs:
+          - question (str)
+          - document_context (str)
+        Output: "yes" or "no"
+        """
+        prompt = ChatPromptTemplate.from_template(
+            "Given the question and a document excerpt, answer 'yes' if the excerpt is relevant to answering the question, otherwise answer 'no'.\n\n"
+            "Question: {question}\n"
+            "Excerpt: {document_context}\n\n"
+            "Relevant?"
+        )
+
+        chain = LLMChain(
+            llm=self.json_llm,
+            prompt=prompt,
+            output_parser=StrOutputParser()
+        )
+
+        return chain
 
     # ---------------------
     # Persistence Helpers
