@@ -48,6 +48,22 @@ PROMPT_TEMPLATE = (
     "Answer:"
 )
 
+class GroundingCheck(BaseModel):
+    """
+    Structured output for answer grounding and hallucination check.
+    """
+    is_grounded: bool = Field(description="Is the generated answer fully supported by the provided context? True or False.")
+    
+    ungrounded_statements: Optional[List[str]] = Field(
+        default=None,
+        description="List any specific statements in the answer that are NOT supported by the context."
+    )
+    
+    correction_suggestion: Optional[str] = Field(
+        default=None,
+        description="If not grounded, suggest how to rephrase the answer to be grounded, or state no grounded answer is possible."
+    )
+
 class CoreGraphState(TypedDict):
     question: str
     original_question: Optional[str]
@@ -131,6 +147,7 @@ class CoreRAGEngine:
         self.document_relevance_grader_chain = self._create_document_relevance_grader_chain()
         self.query_rewriter_chain         = self._create_query_rewriter_chain()
         self.answer_generation_chain      = self._create_answer_generation_chain()
++       self.grounding_check_chain        = self._create_grounding_check_chain()
 
         # Compile workflow
         self._compile_rag_workflow()
@@ -301,6 +318,7 @@ class CoreRAGEngine:
             output_parser=StrOutputParser(),
             verbose=False
         )
+        
     def _create_answer_generation_chain(self) -> LLMChain:
         self.logger.info("Creating answer generation chain with chat history support.")
     
@@ -324,6 +342,60 @@ class CoreRAGEngine:
             output_parser=StrOutputParser(),
             verbose=False
         )
+
+    def _create_grounding_check_chain(self) -> LLMChain:
+        self.logger.info("Creating answer grounding check chain.")
+        parser = PydanticOutputParser(pydantic_object=GroundingCheck)
+
+        prompt = ChatPromptTemplate.from_template(
+            template=(
+                "You are an Answer Grounding Checker. Your task is to verify if the 'Generated Answer' "
+                "is FULLY supported by and ONLY uses information from the provided 'Context Documents'.\n"
+                "Respond with a JSON matching this schema:\n{format_instructions}\n\n"
+                "Context Documents:\n---\n{context}\n---\n\n"
+                "Generated Answer:\n---\n{generation}\n---\n\n"
+                "Provide your JSON response:"
+            ),
+            partial_variables={"format_instructions": parser.get_format_instructions()}
+        )
+
+        return LLMChain(
+            llm=self.json_llm,
+            prompt=prompt,
+            output_parser=parser,
+            verbose=False
+        )
+
+    def _grounding_check_node(self, state: CoreGraphState) -> CoreGraphState:
+        self.logger.info("NODE: Performing grounding check on generated answer...")
+        context    = state.get("context", "")
+        generation = state.get("generation", "")
+
+        if not context or not generation or "Error generating answer." in generation:
+            self.logger.info("Skipping grounding check (no context or generation).")
+            return state
+
+        try:
+            result: GroundingCheck = self.grounding_check_chain.invoke({
+                "context": context,
+                "generation": generation
+            })
+
+            if not result.is_grounded:
+                warn = "⚠️ **Potential Hallucination Detected**\n"
+                if result.ungrounded_statements:
+                    warn += "Ungrounded parts: " + "; ".join(result.ungrounded_statements) + "\n"
+                if result.correction_suggestion:
+                    warn += "Suggestion: " + result.correction_suggestion + "\n"
+                state["generation"] = f"{warn}\n---\n{generation}"
+                state["error_message"] = (state.get("error_message") or "") + " | Grounding issues."
+        except Exception as e:
+            self.logger.error(f"Grounding check failed: {e}", exc_info=True)
+            state["generation"] = f"Error during grounding check.\nOriginal Answer:\n{generation}"
+            state["error_message"] = (state.get("error_message") or "") + f" | Grounding check exception: {e}"
+
+        return state
+
     # ---------------------
     # Wrapper Node Methods
     # ---------------------
@@ -341,102 +413,138 @@ class CoreRAGEngine:
         return state
 
     def _grade_documents_node(self, state: CoreGraphState) -> CoreGraphState:
-    self.logger.info("NODE: Grading documents individually...")
-    question = state.get("original_question") or state["question"]
-    docs = state.get("documents", []) or []
-
-    if not docs:
-        self.logger.info("No documents retrieved to grade.")
-        state["relevance_check_passed"] = False
-        state["context"] = "No documents were retrieved to grade."
+        self.logger.info("NODE: Grading documents individually...")
+        question = state.get("original_question") or state["question"]
+        docs = state.get("documents", []) or []
+    
+        if not docs:
+            self.logger.info("No documents retrieved to grade.")
+            state["relevance_check_passed"] = False
+            state["context"] = "No documents were retrieved to grade."
+            return state
+    
+        relevant_docs: List[Document] = []
+        for idx, doc in enumerate(docs):
+            src = doc.metadata.get("source", "unknown")
+            self.logger.debug(f"Grading doc {idx+1}/{len(docs)} from source '{src}'")
+            try:
+                grade: RelevanceGrade = self.document_relevance_grader_chain.invoke({
+                    "question": question,
+                    "document_content": doc.page_content
+                })
+                self.logger.debug(
+                    f"Doc {idx+1} graded: is_relevant={grade.is_relevant}, justification={grade.justification}"
+                )
+                if grade.is_relevant:
+                    doc.metadata["relevance_grade_justification"] = grade.justification
+                    relevant_docs.append(doc)
+            except Exception as e:
+                self.logger.error(
+                    f"Error grading document {idx+1} (source: {src}): {e}",
+                    exc_info=True
+                )
+                continue
+    
+        if relevant_docs:
+            self.logger.info(f"{len(relevant_docs)} document(s) passed relevance grading.")
+            state["documents"] = relevant_docs
+            state["context"] = "\n\n".join(d.page_content for d in relevant_docs)
+            state["relevance_check_passed"] = True
+        else:
+            self.logger.info("No documents deemed relevant after grading.")
+            state["documents"] = []
+            state["context"] = "Retrieved content was not deemed relevant after grading."
+            state["relevance_check_passed"] = False
+    
+        state["error_message"] = None
         return state
-
-    relevant_docs: List[Document] = []
-    for idx, doc in enumerate(docs):
-        src = doc.metadata.get("source", "unknown")
-        self.logger.debug(f"Grading doc {idx+1}/{len(docs)} from source '{src}'")
-        try:
-            grade: RelevanceGrade = self.document_relevance_grader_chain.invoke({
-                "question": question,
-                "document_content": doc.page_content
-            })
-            self.logger.debug(
-                f"Doc {idx+1} graded: is_relevant={grade.is_relevant}, justification={grade.justification}"
-            )
-            if grade.is_relevant:
-                doc.metadata["relevance_grade_justification"] = grade.justification
-                relevant_docs.append(doc)
-        except Exception as e:
-            self.logger.error(
-                f"Error grading document {idx+1} (source: {src}): {e}",
-                exc_info=True
-            )
-            continue
-
-    if relevant_docs:
-        self.logger.info(f"{len(relevant_docs)} document(s) passed relevance grading.")
-        state["documents"] = relevant_docs
-        state["context"] = "\n\n".join(d.page_content for d in relevant_docs)
-        state["relevance_check_passed"] = True
-    else:
-        self.logger.info("No documents deemed relevant after grading.")
-        state["documents"] = []
-        state["context"] = "Retrieved content was not deemed relevant after grading."
-        state["relevance_check_passed"] = False
-
-    state["error_message"] = None
-    return state
 
 
     def _rewrite_query_node(self, state: CoreGraphState) -> CoreGraphState:
         self.logger.info("NODE: Rewriting query")
-        original = state.get("original_question") or state["question"]
+        original_question = state.get("original_question") or state["question"]
         try:
-            result = self.answer_generation_chain.invoke({
-                "question": question,
-                "context": context,
+            result = self.query_rewriter_chain.invoke({
+                "question": original_question,
                 "chat_history": state.get("chat_history", [])
             })
-            
-            rewritten = result.get("text", "").strip()
-            if rewritten and rewritten.lower() != original.lower():
-                state["question"] = rewritten
+            rewritten_query = result.get("text", "").strip()
+            if rewritten_query and rewritten_query.lower() != original_question.lower():
+                self.logger.info(f"Rewrote '{original_question}' → '{rewritten_query}'")
+                state["question"] = rewritten_query
             else:
-                state["question"] = original
+                self.logger.info(f"No rewrite needed. Keeping '{original_question}'")
+                state["question"] = original_question
         except Exception as e:
-            self.logger.error(f"Rewrite error: {e}")
-            state["question"] = original
-            state["error_message"] = str(e)
+            self.logger.error(f"Error during query rewriting: {e}", exc_info=True)
+            state["question"] = original_question
+            state["error_message"] = f"Query rewriting failed: {e}"
         return state
 
     def _web_search_node(self, state: CoreGraphState) -> CoreGraphState:
         if state.get("run_web_search") != "Yes":
+            self.logger.debug("NODE: Web search skipped; run_web_search != 'Yes'.")
             return state
-        q = state["question"]
-        if not self.search_tool:
-            state["context"] = state.get("context", "") or "Web search tool unavailable."
-            return state
-        try:
-            raw = self.search_tool.invoke({"query": q})
-            docs: List[Document] = []
-            if isinstance(raw, list):
-                for item in raw:
-                    if isinstance(item, dict) and "content" in item:
-                        docs.append(Document(page_content=item["content"],
-                                             metadata={"source": item.get("url", "")}))
-            state["web_search_results"] = docs
-            if docs:
-                state["documents"] = docs
-                state["context"] = "\n\n".join(d.page_content for d in docs)
-            elif not state.get("documents"):
-                state["context"] = "Web search returned no results."
-        except Exception as e:
-            self.logger.error(f"Web search error: {e}")
-            state["error_message"] = str(e)
-            if not state.get("documents"):
-                state["context"] = "Error during web search."
-        return state
 
+        self.logger.info("NODE: Performing web search...")
+        current_question = state["question"]
+
+        # Reset any previous retrieval state
+        state["documents"] = []
+        state["context"] = ""
+        state["web_search_results"] = None
+
+        # Tool availability check
+        if not self.search_tool:
+            self.logger.warning("Web search tool not configured.")
+            state["context"] = "Web search tool is not available. Cannot perform web search."
+            state["error_message"] = "Web search tool unavailable."
+            return state
+
+        try:
+            self.logger.debug(f"Invoking web search for: '{current_question}'")
+            raw_results = self.search_tool.invoke({"query": current_question})
+
+            processed_web_docs: List[Document] = []
+            # If list of dicts returned
+            if isinstance(raw_results, list):
+                for item in raw_results:
+                    if isinstance(item, dict) and item.get("content"):
+                        processed_web_docs.append(
+                            Document(
+                                page_content=item["content"],
+                                metadata={"source": item.get("url", "Unknown Web Source")}
+                            )
+                        )
+            # If single string returned
+            elif isinstance(raw_results, str) and raw_results.strip():
+                processed_web_docs.append(
+                    Document(
+                        page_content=raw_results.strip(),
+                        metadata={"source": "Unknown Web Source - String Output"}
+                    )
+                )
+
+            # Store raw web docs
+            state["web_search_results"] = processed_web_docs
+
+            if processed_web_docs:
+                self.logger.info(f"Web search found {len(processed_web_docs)} documents.")
+                state["documents"] = processed_web_docs
+                state["context"]   = "\n\n".join(d.page_content for d in processed_web_docs)
+                state["error_message"] = None
+            else:
+                self.logger.info("Web search returned no relevant results.")
+                state["context"] = "Web search returned no relevant results or content."
+                # leaving state["documents"] empty
+
+        except Exception as e:
+            self.logger.error(f"An error occurred during web search: {e}", exc_info=True)
+            state["documents"] = []
+            state["context"]   = "An error occurred during web search. Unable to retrieve web results."
+            state["error_message"] = f"Web search execution failed: {e}"
+
+        return state
     def _generate_answer_node(self, state: CoreGraphState) -> CoreGraphState:
         self.logger.info("NODE: Generating answer")
         question = state["question"]
@@ -478,7 +586,7 @@ class CoreRAGEngine:
         graph.add_node("rewrite_query", self._rewrite_query_node)
         graph.add_node("web_search", self._web_search_node)
         graph.add_node("generate_answer", self._generate_answer_node)
-
+        graph.add_node("grounding_check", self._grounding_check_node)
         graph.set_entry_point("retrieve")
 
         graph.add_edge("retrieve", "grade_documents")
@@ -493,7 +601,8 @@ class CoreRAGEngine:
         )
         graph.add_edge("rewrite_query", "retrieve")
         graph.add_edge("web_search", "generate_answer")
-        graph.add_edge("generate_answer", END)
+        graph.add_edge("generate_answer", "grounding_check")
+        graph.add_edge("grounding_check", END)
 
         self.rag_workflow = graph.compile()
         self.logger.info("RAG workflow compiled successfully.")
