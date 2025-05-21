@@ -1,5 +1,3 @@
-# src/core_rag_engine.py
-
 import os
 import logging
 import tempfile
@@ -19,26 +17,25 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
-
 from langchain.chains import LLMChain
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
 
 from langgraph.graph import StateGraph, END
 
-# Optional support for Streamlit file uploads
+from pydantic import BaseModel, Field
+
+
 try:
     from streamlit.runtime.uploaded_file_manager import UploadedFile  # type: ignore
 except ImportError:
     UploadedFile = None
 
-# Try token-based splitting
 try:
     import tiktoken
 except ImportError:
     tiktoken = None
 
-# Load environment variables once
 load_dotenv()
 
 # Prompt template for final answer generation
@@ -62,6 +59,18 @@ class CoreGraphState(TypedDict):
     relevance_check_passed: Optional[bool]
     error_message: Optional[str]
     collection_name: Optional[str]
+
+class RelevanceGrade(BaseModel):
+    """
+    Structured output for document relevance grading.
+    """
+    is_relevant: bool = Field(
+        description="Is the document excerpt relevant to the question? True or False."
+    )
+    justification: Optional[str] = Field(
+        default=None,
+        description="Brief justification for the relevance decision (1-2 sentences)."
+    )
 
 
 class CoreRAGEngine:
@@ -245,11 +254,29 @@ class CoreRAGEngine:
     # Chain Factories
     # ---------------------
     def _create_document_relevance_grader_chain(self) -> LLMChain:
-        prompt = ChatPromptTemplate.from_template(
-            "Given the question and a document excerpt, answer 'yes' if the excerpt is relevant, otherwise 'no'.\n\n"
-            "Question: {question}\nExcerpt: {document_context}\n\nRelevant?"
+        parser = PydanticOutputParser(pydantic_object=RelevanceGrade)
+        prompt_template = (
+            "You are a document relevance grader. Your task is to assess if a given document excerpt\n"
+            "is relevant to the provided question.\n\n"
+            "Respond with a JSON object matching this schema:\n"
+            "{format_instructions}\n\n"
+            "Question: {question}\n\n"
+            "Document Excerpt:\n---\n{document_content}\n---\n\n"
+            "Provide your JSON response:"
         )
-        return LLMChain(llm=self.json_llm, prompt=prompt, output_parser=StrOutputParser())
+        prompt = ChatPromptTemplate.from_template(
+            template=prompt_template,
+            partial_variables={"format_instructions": parser.get_format_instructions()}
+        )
+        chain = LLMChain(
+            llm=self.json_llm,
+            prompt=prompt,
+            output_parser=parser,
+            verbose=False
+        )
+        self.logger.info("Created document_relevance_grader_chain with PydanticOutputParser.")
+        return chain
+
 
     def _create_query_rewriter_chain(self) -> LLMChain:
         prompt = ChatPromptTemplate.from_template(
@@ -278,29 +305,52 @@ class CoreRAGEngine:
         return state
 
     def _grade_documents_node(self, state: CoreGraphState) -> CoreGraphState:
-        self.logger.info("NODE: Grading documents")
-        question = state.get("original_question") or state["question"]
-        context = state.get("context", "")
-        if not context.strip():
-            state["relevance_check_passed"] = False
-            return state
-        try:
-            result = self.document_relevance_grader_chain.invoke({
-                "question": question,
-                "document_context": context
-            })
-            decision = result.get("text", "").strip().lower()
-            if decision == "yes":
-                state["relevance_check_passed"] = True
-            else:
-                state["relevance_check_passed"] = False
-                state["documents"] = []
-                state["context"] = "Retrieved content not relevant."
-        except Exception as e:
-            self.logger.error(f"Grading error: {e}")
-            state["relevance_check_passed"] = False
-            state["error_message"] = str(e)
+    self.logger.info("NODE: Grading documents individually...")
+    question = state.get("original_question") or state["question"]
+    docs = state.get("documents", []) or []
+
+    if not docs:
+        self.logger.info("No documents retrieved to grade.")
+        state["relevance_check_passed"] = False
+        state["context"] = "No documents were retrieved to grade."
         return state
+
+    relevant_docs: List[Document] = []
+    for idx, doc in enumerate(docs):
+        src = doc.metadata.get("source", "unknown")
+        self.logger.debug(f"Grading doc {idx+1}/{len(docs)} from source '{src}'")
+        try:
+            grade: RelevanceGrade = self.document_relevance_grader_chain.invoke({
+                "question": question,
+                "document_content": doc.page_content
+            })
+            self.logger.debug(
+                f"Doc {idx+1} graded: is_relevant={grade.is_relevant}, justification={grade.justification}"
+            )
+            if grade.is_relevant:
+                doc.metadata["relevance_grade_justification"] = grade.justification
+                relevant_docs.append(doc)
+        except Exception as e:
+            self.logger.error(
+                f"Error grading document {idx+1} (source: {src}): {e}",
+                exc_info=True
+            )
+            continue
+
+    if relevant_docs:
+        self.logger.info(f"{len(relevant_docs)} document(s) passed relevance grading.")
+        state["documents"] = relevant_docs
+        state["context"] = "\n\n".join(d.page_content for d in relevant_docs)
+        state["relevance_check_passed"] = True
+    else:
+        self.logger.info("No documents deemed relevant after grading.")
+        state["documents"] = []
+        state["context"] = "Retrieved content was not deemed relevant after grading."
+        state["relevance_check_passed"] = False
+
+    state["error_message"] = None
+    return state
+
 
     def _rewrite_query_node(self, state: CoreGraphState) -> CoreGraphState:
         self.logger.info("NODE: Rewriting query")
@@ -590,3 +640,5 @@ class CoreRAGEngine:
             for d in docs
         ]
         return {"answer": answer, "sources": sources}
+
+
