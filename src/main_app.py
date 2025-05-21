@@ -1,13 +1,23 @@
 # src/main_app.py
 
 import os
+from typing import List
+
 import streamlit as st
+
+from langchain.agents import AgentFinish, AgentAction
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+
 from src.core_rag_engine import CoreRAGEngine
 from src.stock import fetch_stock_news_documents
 from src.scraper import scrape_urls_as_documents
 from src.loop import AgentLoopWorkflow, AgentLoopState
-from langchain.agents import AgentFinish, AgentAction
 
+
+# Initialize chat history
+if "qa_chat_history" not in st.session_state:
+    st.session_state.qa_chat_history: List[BaseMessage] = []
+    
 st.set_page_config(page_title="InsightEngine - Adaptive RAG", layout="wide")
 st.title("InsightEngine – Adaptive RAG")
 
@@ -166,34 +176,49 @@ if st.sidebar.button("Ingest Scraped Content 🔍"):
             except Exception as e:
                 st.sidebar.error(f"❌ Error during scraping or ingestion: {e}")
 
-# Main: Q&A
 st.header("Query the Collection")
-question = st.text_input("Your question here")
+
+# show past messages
+for msg in st.session_state.qa_chat_history:
+    if isinstance(msg, HumanMessage):
+        with st.chat_message("user"):
+            st.markdown(msg.content)
+    elif isinstance(msg, AIMessage):
+        with st.chat_message("assistant"):
+            st.markdown(msg.content)
+
+# current question input
+question = st.text_input(
+    "Your question here:",
+    key="qa_question_input_box"
+)
 
 if st.button("Get Answer"):
-    if not question:
+    if not question.strip():
         st.warning("Please enter a question.")
     else:
+        current_q = question.strip()
         with st.spinner("Generating adaptive answer..."):
             try:
-                result = engine.run_full_rag_workflow(
-                    question=question,
-                    collection_name=collection_name
+                resp = engine.run_full_rag_workflow(
+                    question=current_q,
+                    collection_name=collection_name,
+                    chat_history=st.session_state.qa_chat_history
                 )
+                ai_ans = resp.get("answer", "Sorry, no answer.")
+
+                # append to history
+                st.session_state.qa_chat_history.append(HumanMessage(content=current_q))
+                st.session_state.qa_chat_history.append(AIMessage(content=ai_ans))
+
             except Exception as e:
-                st.error(f"Error during RAG workflow: {e}")
-                result = {"answer": "Error retrieving answer.", "sources": []}
+                st.session_state.qa_chat_history.append(HumanMessage(content=current_q))
+                st.session_state.qa_chat_history.append(
+                    AIMessage(content=f"Error processing request: {e}")
+                )
+                st.error(f"Error: {e}")
 
-        st.subheader("Answer")
-        st.write(result.get("answer", ""))
-
-        st.subheader("Sources")
-        srcs = result.get("sources", [])
-        if not srcs:
-            st.write("No sources.")
-        else:
-            for s in srcs:
-                st.markdown(f"**{s['source']}**: {s['preview']}")
+        st.rerun()
 
 # ───────────────────────────────────────────────────────────────────────────────
 # Insight Agent (Advanced Tasks)
