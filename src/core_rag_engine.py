@@ -18,7 +18,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
 from langchain.chains import LLMChain
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
 
 from langgraph.graph import StateGraph, END
@@ -27,7 +28,7 @@ from pydantic import BaseModel, Field
 
 
 try:
-    from streamlit.runtime.uploaded_file_manager import UploadedFile  # type: ignore
+    from streamlit.runtime.uploaded_file_manager import UploadedFile 
 except ImportError:
     UploadedFile = None
 
@@ -59,6 +60,7 @@ class CoreGraphState(TypedDict):
     relevance_check_passed: Optional[bool]
     error_message: Optional[str]
     collection_name: Optional[str]
+    chat_history: Optional[List[BaseMessage]]
 
 class RelevanceGrade(BaseModel):
     """
@@ -279,15 +281,49 @@ class CoreRAGEngine:
 
 
     def _create_query_rewriter_chain(self) -> LLMChain:
-        prompt = ChatPromptTemplate.from_template(
-            "Rewrite the question to improve retrieval clarity.\n\nOriginal: {question}\n\nRewritten:"
+        self.logger.info("Creating query rewriter chain with chat history support.")
+    
+        system_prompt = (
+            "You are a query optimization assistant. Given 'Chat History' (if any) and "
+            "'Latest User Question', rewrite the question to be clear, specific, and self-contained "
+            "for retrieval. If already clear, return it as is."
         )
-        return LLMChain(llm=self.llm, prompt=prompt, output_parser=StrOutputParser())
-
+    
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            MessagesPlaceholder(variable_name="chat_history", optional=True),
+            ("human", "Latest User Question to rewrite:\n{question}")
+        ])
+    
+        return LLMChain(
+            llm=self.llm,
+            prompt=prompt,
+            output_parser=StrOutputParser(),
+            verbose=False
+        )
     def _create_answer_generation_chain(self) -> LLMChain:
-        prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
-        return LLMChain(llm=self.llm, prompt=prompt, output_parser=StrOutputParser())
-
+        self.logger.info("Creating answer generation chain with chat history support.")
+    
+        system_prompt = (
+            "You are a helpful assistant. Your answer must be based *only* on the provided context documents.\n"
+            "If the context lacks the answer, say you don't know. Do not invent details.\n"
+            "Use 'Chat History' (if any) only to resolve references in the current question, "
+            "but ground your answer in the current context.\n\n"
+            "Current Context Documents:\n---\n{context}\n---"
+        )
+    
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            MessagesPlaceholder(variable_name="chat_history", optional=True),
+            ("human", "{question}")
+        ])
+    
+        return LLMChain(
+            llm=self.llm,
+            prompt=prompt,
+            output_parser=StrOutputParser(),
+            verbose=False
+        )
     # ---------------------
     # Wrapper Node Methods
     # ---------------------
@@ -356,7 +392,12 @@ class CoreRAGEngine:
         self.logger.info("NODE: Rewriting query")
         original = state.get("original_question") or state["question"]
         try:
-            result = self.query_rewriter_chain.invoke({"question": original})
+            result = self.answer_generation_chain.invoke({
+                "question": question,
+                "context": context,
+                "chat_history": state.get("chat_history", [])
+            })
+            
             rewritten = result.get("text", "").strip()
             if rewritten and rewritten.lower() != original.lower():
                 state["question"] = rewritten
@@ -615,7 +656,8 @@ class CoreRAGEngine:
     def run_full_rag_workflow(
         self,
         question: str,
-        collection_name: Optional[str] = None
+        collection_name: Optional[str] = None,
+        chat_history: Optional[List[BaseMessage]] = None   # NEW
     ) -> Dict[str, Any]:
         name = collection_name or self.default_collection_name
         initial_state: CoreGraphState = {
@@ -629,9 +671,11 @@ class CoreRAGEngine:
             "run_web_search": "No",
             "relevance_check_passed": None,
             "error_message": None,
-            "collection_name": name
+            "collection_name": name,
+            "chat_history": chat_history or []
         }
         final = self.rag_workflow.invoke(initial_state)
+        
         answer = final.get("generation", "")
         docs   = final.get("documents", [])
         sources = [
@@ -640,5 +684,3 @@ class CoreRAGEngine:
             for d in docs
         ]
         return {"answer": answer, "sources": sources}
-
-
