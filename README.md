@@ -36,44 +36,20 @@ InsightEngine is built around a modular architecture:
 * **Agentic Loop (`src/loop.py`)**: Implements the `AgentLoopWorkflow` (Insight Agent), enabling the system to perform complex multi-step tasks using the `CoreRAGEngine` and data feed tools.
 * **Streamlit UI (`src/main_app.py`)**: The main entry point for users, integrating all functionalities.
 
-## Setup and Installation
+## API Key Configuration**:
+* Create a file named `.env` in the root directory of the project.
+ * Add your API keys to this file:
+     ```env
+     OPENAI_API_KEY="your_openai_api_key"
+     TAVILY_API_KEY="your_tavily_api_key"
+     GOOGLE_API_KEY="your_google_api_key" # Optional, if using Google LLMs/Embeddings
 
-1.  **Prerequisites**:
-    * Python >=3.7
-    * Git (for cloning the repository)
-
-2.  **Clone the Repository**:
-    ```bash
-    git clone <repository_url>
-    cd adaptive-rag-project
-    ```
-
-3.  **Create a Virtual Environment (Recommended)**:
-    ```bash
-    python -m venv venv
-    source venv/bin/activate  # On Windows: venv\Scripts\activate
-    ```
-
-4.  **Install Dependencies**:
-    ```bash
-    pip install -e .
-    ```
-    This command installs the project in editable mode along with all dependencies specified in `setup.py`.
-
-5.  **API Key Configuration**:
-    * Create a file named `.env` in the root directory of the project.
-    * Add your API keys to this file:
-        ```env
-        OPENAI_API_KEY="your_openai_api_key"
-        TAVILY_API_KEY="your_tavily_api_key"
-        GOOGLE_API_KEY="your_google_api_key" # Optional, if using Google LLMs/Embeddings
-
-        # Optional: Override CoreRAGEngine defaults
-        # LLM_PROVIDER="openai" # openai, ollama, google
-        # LLM_MODEL_NAME="gpt-4o"
-        # EMBEDDING_PROVIDER="openai" # openai, gpt4all, google
-        # EMBEDDING_MODEL_NAME="text-embedding-3-small"
-        ```
+     # Optional: Override CoreRAGEngine defaults
+     # LLM_PROVIDER="openai" # openai, ollama, google
+     # LLM_MODEL_NAME="gpt-4o"
+     # EMBEDDING_PROVIDER="openai" # openai, gpt4all, google
+     # EMBEDDING_MODEL_NAME="text-embedding-3-small"
+     ```
 
 ## How to Run
 
