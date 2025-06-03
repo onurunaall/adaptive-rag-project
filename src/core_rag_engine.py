@@ -26,7 +26,6 @@ from langgraph.graph import StateGraph, END
 
 from pydantic import BaseModel, Field
 
-
 try:
     from streamlit.runtime.uploaded_file_manager import UploadedFile 
 except ImportError:
@@ -39,7 +38,6 @@ except ImportError:
 
 load_dotenv()
 
-# Prompt template for final answer generation
 PROMPT_TEMPLATE = (
     "Answer the question based only on the following context.\n"
     "If the context does not contain the answer, state that you don't know.\n\n"
@@ -53,12 +51,10 @@ class GroundingCheck(BaseModel):
     Structured output for answer grounding and hallucination check.
     """
     is_grounded: bool = Field(description="Is the generated answer fully supported by the provided context? True or False.")
-    
     ungrounded_statements: Optional[List[str]] = Field(
         default=None,
         description="List any specific statements in the answer that are NOT supported by the context."
     )
-    
     correction_suggestion: Optional[str] = Field(
         default=None,
         description="If not grounded, suggest how to rephrase the answer to be grounded, or state no grounded answer is possible."
@@ -75,6 +71,8 @@ class CoreGraphState(TypedDict):
     run_web_search: str  # "Yes" or "No"
     relevance_check_passed: Optional[bool]
     error_message: Optional[str]
+    grounding_check_attempts: int
+    regeneration_feedback: Optional[str]
     collection_name: Optional[str]
     chat_history: Optional[List[BaseMessage]]
 
@@ -89,7 +87,6 @@ class RelevanceGrade(BaseModel):
         default=None,
         description="Brief justification for the relevance decision (1-2 sentences)."
     )
-
 
 class CoreRAGEngine:
     """
@@ -110,6 +107,8 @@ class CoreRAGEngine:
         tavily_api_key: Optional[str] = os.getenv("TAVILY_API_KEY"),
         openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY"),
         google_api_key: Optional[str] = os.getenv("GOOGLE_API_KEY"),
+        max_rewrite_retries: int = 1,
+        max_grounding_attempts: int = 1,
     ):
         # Configuration
         self.llm_provider = llm_provider
@@ -123,6 +122,8 @@ class CoreRAGEngine:
         self.tavily_api_key = tavily_api_key
         self.openai_api_key = openai_api_key
         self.google_api_key = google_api_key
+        self.max_rewrite_retries = max_rewrite_retries
+        self.max_grounding_attempts = max_grounding_attempts
 
         # Persistence directory
         base = persist_directory_base or tempfile.gettempdir()
@@ -147,7 +148,7 @@ class CoreRAGEngine:
         self.document_relevance_grader_chain = self._create_document_relevance_grader_chain()
         self.query_rewriter_chain         = self._create_query_rewriter_chain()
         self.answer_generation_chain      = self._create_answer_generation_chain()
-+       self.grounding_check_chain        = self._create_grounding_check_chain()
+        self.grounding_check_chain        = self._create_grounding_check_chain()
 
         # Compile workflow
         self._compile_rag_workflow()
@@ -203,12 +204,16 @@ class CoreRAGEngine:
         if not self.google_api_key:
             self.logger.error("GOOGLE_API_KEY missing")
             raise ValueError("GOOGLE_API_KEY is required")
-        return ChatGoogleGenerativeAI(
-            model=self.llm_model_name,
-            temperature=self.temperature,
-            google_api_key=self.google_api_key,
-            convert_system_message_to_human=True
-        )
+        kwargs: Dict[str, Any] = {
+            "model": self.llm_model_name,
+            "temperature": self.temperature,
+            "google_api_key": self.google_api_key,
+            "convert_system_message_to_human": True
+        }
+        if use_json:
+            kwargs["model_kwargs"] = {"response_mime_type": "application/json"}
+            self.logger.info(f"JSON mode enabled for Google model {self.llm_model_name}")
+        return ChatGoogleGenerativeAI(**kwargs)
 
     # ---------------------
     # Embedding Initialization
@@ -296,46 +301,40 @@ class CoreRAGEngine:
         self.logger.info("Created document_relevance_grader_chain with PydanticOutputParser.")
         return chain
 
-
     def _create_query_rewriter_chain(self) -> LLMChain:
         self.logger.info("Creating query rewriter chain with chat history support.")
-    
         system_prompt = (
             "You are a query optimization assistant. Given 'Chat History' (if any) and "
             "'Latest User Question', rewrite the question to be clear, specific, and self-contained "
             "for retrieval. If already clear, return it as is."
         )
-    
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
             MessagesPlaceholder(variable_name="chat_history", optional=True),
             ("human", "Latest User Question to rewrite:\n{question}")
         ])
-    
         return LLMChain(
             llm=self.llm,
             prompt=prompt,
             output_parser=StrOutputParser(),
             verbose=False
         )
-        
+
     def _create_answer_generation_chain(self) -> LLMChain:
-        self.logger.info("Creating answer generation chain with chat history support.")
-    
+        self.logger.info("Creating answer generation chain with chat history and feedback support.")
         system_prompt = (
             "You are a helpful assistant. Your answer must be based *only* on the provided context documents.\n"
             "If the context lacks the answer, say you don't know. Do not invent details.\n"
             "Use 'Chat History' (if any) only to resolve references in the current question, "
             "but ground your answer in the current context.\n\n"
-            "Current Context Documents:\n---\n{context}\n---"
+            "Current Context Documents:\n---\n{context}\n---\n\n"
+            "{optional_regeneration_prompt_header_if_feedback}\n"
         )
-    
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
             MessagesPlaceholder(variable_name="chat_history", optional=True),
-            ("human", "{question}")
+            ("human", "{regeneration_feedback_if_any}{question}")
         ])
-    
         return LLMChain(
             llm=self.llm,
             prompt=prompt,
@@ -346,7 +345,6 @@ class CoreRAGEngine:
     def _create_grounding_check_chain(self) -> LLMChain:
         self.logger.info("Creating answer grounding check chain.")
         parser = PydanticOutputParser(pydantic_object=GroundingCheck)
-
         prompt = ChatPromptTemplate.from_template(
             template=(
                 "You are an Answer Grounding Checker. Your task is to verify if the 'Generated Answer' "
@@ -358,7 +356,6 @@ class CoreRAGEngine:
             ),
             partial_variables={"format_instructions": parser.get_format_instructions()}
         )
-
         return LLMChain(
             llm=self.json_llm,
             prompt=prompt,
@@ -370,10 +367,15 @@ class CoreRAGEngine:
         self.logger.info("NODE: Performing grounding check on generated answer...")
         context    = state.get("context", "")
         generation = state.get("generation", "")
+        question   = state.get("original_question") or state.get("question", "")
+
+        current_attempts = state.get("grounding_check_attempts", 0) + 1
+        state["grounding_check_attempts"] = current_attempts
+        state["regeneration_feedback"] = None
 
         if not context or not generation or "Error generating answer." in generation:
-            self.logger.info("Skipping grounding check (no context or generation).")
-            return state
+            self.logger.info("Skipping grounding check (no context or generation, or generation error).")
+            return {**state, "regeneration_feedback": None, "grounding_check_attempts": current_attempts}
 
         try:
             result: GroundingCheck = self.grounding_check_chain.invoke({
@@ -382,19 +384,57 @@ class CoreRAGEngine:
             })
 
             if not result.is_grounded:
-                warn = "⚠️ **Potential Hallucination Detected**\n"
+                feedback_parts = []
                 if result.ungrounded_statements:
-                    warn += "Ungrounded parts: " + "; ".join(result.ungrounded_statements) + "\n"
+                    feedback_parts.append(f"The following statements were ungrounded: {'; '.join(result.ungrounded_statements)}.")
                 if result.correction_suggestion:
-                    warn += "Suggestion: " + result.correction_suggestion + "\n"
-                state["generation"] = f"{warn}\n---\n{generation}"
-                state["error_message"] = (state.get("error_message") or "") + " | Grounding issues."
+                    feedback_parts.append(f"Suggestion for correction: {result.correction_suggestion}.")
+
+                if not feedback_parts:
+                    feedback_parts.append("The answer was not fully grounded in the provided context. Please revise.")
+
+                regeneration_prompt = (
+                    f"The previous answer to the question '{question}' was not well-grounded. "
+                    f"{' '.join(feedback_parts)} "
+                    "Please generate a new answer focusing ONLY on the provided documents and addressing these issues."
+                )
+                state["regeneration_feedback"] = regeneration_prompt
+                self.logger.warning(f"Grounding check FAILED (Attempt {current_attempts}). Feedback: {regeneration_prompt}")
+            else:
+                self.logger.info(f"Grounding check PASSED (Attempt {current_attempts}).")
+                state["regeneration_feedback"] = None
+
         except Exception as e:
-            self.logger.error(f"Grounding check failed: {e}", exc_info=True)
-            state["generation"] = f"Error during grounding check.\nOriginal Answer:\n{generation}"
+            self.logger.error(f"Grounding check failed with exception: {e}", exc_info=True)
+            state["regeneration_feedback"] = f"A system error occurred during grounding check: {e}. Please try to generate a concise answer based on context."
             state["error_message"] = (state.get("error_message") or "") + f" | Grounding check exception: {e}"
 
         return state
+
+    def _route_after_grounding_check(self, state: CoreGraphState) -> str:
+        self.logger.info(
+            f"Routing after grounding check. Attempts: {state.get('grounding_check_attempts', 0)}. "
+            f"Feedback: {'Yes' if state.get('regeneration_feedback') else 'No'}"
+        )
+
+        max_attempts = getattr(self, 'max_grounding_attempts', 1)
+
+        if state.get("regeneration_feedback") is None:
+            self.logger.info("Answer is grounded. Ending.")
+            return END
+
+        if state.get("grounding_check_attempts", 0) >= max_attempts:
+            self.logger.warning(f"Max grounding attempts ({max_attempts}) reached. Answer still not grounded. Ending with warning.")
+            original_generation = state.get("generation", "")
+            warning_message = (
+                "⚠️ **Self-Correction Incomplete:** The following answer could not be fully verified against the provided documents after attempts to correct it. "
+                "Please use with caution.\n---\n"
+            )
+            state["generation"] = warning_message + original_generation
+            return END
+
+        self.logger.info("Answer not grounded, and attempts remain. Routing back to generate_answer.")
+        return "generate_answer"
 
     # ---------------------
     # Wrapper Node Methods
@@ -416,13 +456,13 @@ class CoreRAGEngine:
         self.logger.info("NODE: Grading documents individually...")
         question = state.get("original_question") or state["question"]
         docs = state.get("documents", []) or []
-    
+
         if not docs:
             self.logger.info("No documents retrieved to grade.")
             state["relevance_check_passed"] = False
             state["context"] = "No documents were retrieved to grade."
             return state
-    
+
         relevant_docs: List[Document] = []
         for idx, doc in enumerate(docs):
             src = doc.metadata.get("source", "unknown")
@@ -444,7 +484,7 @@ class CoreRAGEngine:
                     exc_info=True
                 )
                 continue
-    
+
         if relevant_docs:
             self.logger.info(f"{len(relevant_docs)} document(s) passed relevance grading.")
             state["documents"] = relevant_docs
@@ -455,10 +495,9 @@ class CoreRAGEngine:
             state["documents"] = []
             state["context"] = "Retrieved content was not deemed relevant after grading."
             state["relevance_check_passed"] = False
-    
+
         state["error_message"] = None
         return state
-
 
     def _rewrite_query_node(self, state: CoreGraphState) -> CoreGraphState:
         self.logger.info("NODE: Rewriting query")
@@ -489,12 +528,10 @@ class CoreRAGEngine:
         self.logger.info("NODE: Performing web search...")
         current_question = state["question"]
 
-        # Reset any previous retrieval state
         state["documents"] = []
         state["context"] = ""
         state["web_search_results"] = None
 
-        # Tool availability check
         if not self.search_tool:
             self.logger.warning("Web search tool not configured.")
             state["context"] = "Web search tool is not available. Cannot perform web search."
@@ -506,7 +543,6 @@ class CoreRAGEngine:
             raw_results = self.search_tool.invoke({"query": current_question})
 
             processed_web_docs: List[Document] = []
-            # If list of dicts returned
             if isinstance(raw_results, list):
                 for item in raw_results:
                     if isinstance(item, dict) and item.get("content"):
@@ -516,7 +552,6 @@ class CoreRAGEngine:
                                 metadata={"source": item.get("url", "Unknown Web Source")}
                             )
                         )
-            # If single string returned
             elif isinstance(raw_results, str) and raw_results.strip():
                 processed_web_docs.append(
                     Document(
@@ -525,7 +560,6 @@ class CoreRAGEngine:
                     )
                 )
 
-            # Store raw web docs
             state["web_search_results"] = processed_web_docs
 
             if processed_web_docs:
@@ -536,7 +570,6 @@ class CoreRAGEngine:
             else:
                 self.logger.info("Web search returned no relevant results.")
                 state["context"] = "Web search returned no relevant results or content."
-                # leaving state["documents"] empty
 
         except Exception as e:
             self.logger.error(f"An error occurred during web search: {e}", exc_info=True)
@@ -545,18 +578,35 @@ class CoreRAGEngine:
             state["error_message"] = f"Web search execution failed: {e}"
 
         return state
+
     def _generate_answer_node(self, state: CoreGraphState) -> CoreGraphState:
         self.logger.info("NODE: Generating answer")
         question = state["question"]
+        original_question = state.get("original_question", question)
         context = state.get("context", "")
+        chat_history = state.get("chat_history", [])
+        regeneration_feedback = state.get("regeneration_feedback")
+
+        input_data_for_chain = {
+            "context": context,
+            "chat_history": chat_history,
+            "optional_regeneration_prompt_header_if_feedback": "",
+            "regeneration_feedback_if_any": "",
+            "question": original_question
+        }
+
+        if regeneration_feedback:
+            self.logger.info(f"Generating answer with regeneration feedback: {regeneration_feedback}")
+            input_data_for_chain["optional_regeneration_prompt_header_if_feedback"] = (
+                "You are attempting to regenerate a previous answer that had issues."
+            )
+            input_data_for_chain["regeneration_feedback_if_any"] = regeneration_feedback + "\n\nOriginal Question: "
+
         try:
-            result = self.answer_generation_chain.invoke({
-                "question": question,
-                "context": context
-            })
-            state["generation"] = result.get("text", "").strip()
+            generated_text = self.answer_generation_chain.run(input_data_for_chain)
+            state["generation"] = generated_text.strip()
         except Exception as e:
-            self.logger.error(f"Generation error: {e}")
+            self.logger.error(f"Generation error: {e}", exc_info=True)
             state["generation"] = "Error generating answer."
             state["error_message"] = str(e)
         return state
@@ -567,7 +617,7 @@ class CoreRAGEngine:
         self.logger.info(f"Routing after grading: passed={passed}, retries={retries}")
         if passed:
             return "generate_answer"
-        if retries < 1:
+        if retries < self.max_rewrite_retries:
             state["retries"] = retries + 1
             return "rewrite_query"
         if self.search_tool:
@@ -579,7 +629,7 @@ class CoreRAGEngine:
     # ---------------------
     # Workflow Compilation
     # ---------------------
-    def _compile_rag_workflow(self) -> None:
+    def _compile_rag_workflow(self) -> Any:
         graph = StateGraph(CoreGraphState)
         graph.add_node("retrieve", self._retrieve_node)
         graph.add_node("grade_documents", self._grade_documents_node)
@@ -602,7 +652,14 @@ class CoreRAGEngine:
         graph.add_edge("rewrite_query", "retrieve")
         graph.add_edge("web_search", "generate_answer")
         graph.add_edge("generate_answer", "grounding_check")
-        graph.add_edge("grounding_check", END)
+        graph.add_conditional_edges(
+            "grounding_check",
+            self._route_after_grounding_check,
+            {
+                "generate_answer": "generate_answer",
+                END: END
+            }
+        )
 
         self.rag_workflow = graph.compile()
         self.logger.info("RAG workflow compiled successfully.")
@@ -687,16 +744,12 @@ class CoreRAGEngine:
 
         all_chunks_for_collection: List[Document] = []
 
-        # 1) Handle preloaded documents
         if direct_documents is not None and isinstance(direct_documents, list) and direct_documents:
             if all(isinstance(doc, Document) for doc in direct_documents):
                 self.logger.info(f"Using {len(direct_documents)} preloaded documents for ingestion.")
-                # Chunk them according to engine settings
                 all_chunks_for_collection = self.split_documents(direct_documents)
             else:
                 self.logger.error("`direct_documents` provided but some items are not Document instances.")
-
-        # 2) Otherwise, process `sources`
         elif sources is not None:
             self.logger.info("Processing documents from `sources` parameter.")
             if not isinstance(sources, list):
@@ -712,7 +765,6 @@ class CoreRAGEngine:
                     chunks = self.split_documents(raw_docs)
                     all_chunks_for_collection.extend(chunks)
 
-        # 3) Nothing to index?
         if not all_chunks_for_collection:
             if recreate_collection:
                 self.logger.info(f"No docs but recreate_collection=True. Clearing '{name}'.")
@@ -721,7 +773,6 @@ class CoreRAGEngine:
                 self.logger.warning(f"No documents to ingest for '{name}'. Skipping.")
             return
 
-        # 4) Index everything
         self.index_documents(
             docs=all_chunks_for_collection,
             name=name,
@@ -766,7 +817,7 @@ class CoreRAGEngine:
         self,
         question: str,
         collection_name: Optional[str] = None,
-        chat_history: Optional[List[BaseMessage]] = None   # NEW
+        chat_history: Optional[List[BaseMessage]] = None
     ) -> Dict[str, Any]:
         name = collection_name or self.default_collection_name
         initial_state: CoreGraphState = {
@@ -780,11 +831,13 @@ class CoreRAGEngine:
             "run_web_search": "No",
             "relevance_check_passed": None,
             "error_message": None,
+            "grounding_check_attempts": 0,
+            "regeneration_feedback": None,
             "collection_name": name,
             "chat_history": chat_history or []
         }
         final = self.rag_workflow.invoke(initial_state)
-        
+
         answer = final.get("generation", "")
         docs   = final.get("documents", [])
         sources = [
