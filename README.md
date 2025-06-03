@@ -1,1 +1,83 @@
-# adaptive-rag-project
+# InsightEngine: Adaptive Information Retrieval & Analysis Platform
+
+## Overview
+
+InsightEngine is an intelligent system designed to consume, understand, and analyze diverse information from multiple sources. It moves beyond simple Q&A bots by employing an adaptive Retrieval-Augmented Generation (RAG) process and agentic capabilities to perform complex, multi-step tasks. The ultimate purpose is to provide a versatile and reliable platform that significantly enhances your ability to extract insights, get answers, and accomplish complex information-based tasks by intelligently leveraging modern AI techniques.
+
+## Key Features
+
+* **Diverse Information Consumption**:
+    * Ingest documents provided by users (PDFs, text files).
+    * Process content from web pages via URLs.
+    * Integrate specialized, dynamic data streams such as live stock news and targeted web scrapes.
+* **Adaptive RAG (Retrieval-Augmented Generation)**:
+    * **Sophisticated Retrieval**: Fetches potentially relevant information from its knowledge base (ChromaDB vector stores).
+    * **Relevance Grading**: Assesses the quality of retrieved information for answering specific questions.
+    * **Query Rewriting**: If initial information is insufficient, it can rewrite questions for clarity and effectiveness and retry retrieval, considering chat history.
+    * **Web Search Fallback**: Can reach out to the internet (using Tavily Search) for up-to-date information if local documents don't suffice.
+    * **Grounded Generation**: Generates answers based *only* on the relevant information gathered.
+    * **Self-Correction & Grounding Check**: Critically checks its own answers for grounding in source documents to prevent hallucinations. If issues are detected, it can attempt to self-correct by regenerating the answer with feedback.
+    * **Conversational Context**: Supports follow-up questions by maintaining and utilizing chat history.
+* **Agentic Capabilities (Insight Agent)**:
+    * Accepts high-level, multi-step goals from the user.
+    * Autonomously plans and executes necessary steps using available tools (data fetching, ingestion into the RAG engine, querying the knowledge base).
+    * Synthesizes comprehensive results for complex tasks.
+* **User-Friendly Interface**:
+    * A Streamlit web application (`src/main_app.py`) provides access to all functionalities, including data ingestion management, direct RAG Q&A, and the advanced Insight Agent.
+
+## Architecture Overview
+
+InsightEngine is built around a modular architecture:
+
+* **`CoreRAGEngine` (`src/core_rag_engine.py`)**: The central processing unit responsible for the entire adaptive RAG workflow, including ingestion, indexing, querying, and the self-correction mechanisms. It supports multiple LLM and embedding providers (OpenAI, Ollama, Google).
+* **Data Feed Modules**:
+    * `src/stock.py`: Provides `fetch_stock_news_documents()` for fetching and formatting stock news.
+    * `src/scraper.py`: Provides `scrape_urls_as_documents()` for fetching and formatting content from web URLs.
+* **Agentic Loop (`src/loop.py`)**: Implements the `AgentLoopWorkflow` (Insight Agent), enabling the system to perform complex multi-step tasks using the `CoreRAGEngine` and data feed tools.
+* **Streamlit UI (`src/main_app.py`)**: The main entry point for users, integrating all functionalities.
+
+## Setup and Installation
+
+1.  **Prerequisites**:
+    * Python >=3.7
+    * Git (for cloning the repository)
+
+2.  **Clone the Repository**:
+    ```bash
+    git clone <repository_url>
+    cd adaptive-rag-project
+    ```
+
+3.  **Create a Virtual Environment (Recommended)**:
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # On Windows: venv\Scripts\activate
+    ```
+
+4.  **Install Dependencies**:
+    ```bash
+    pip install -e .
+    ```
+    This command installs the project in editable mode along with all dependencies specified in `setup.py`.
+
+5.  **API Key Configuration**:
+    * Create a file named `.env` in the root directory of the project.
+    * Add your API keys to this file:
+        ```env
+        OPENAI_API_KEY="your_openai_api_key"
+        TAVILY_API_KEY="your_tavily_api_key"
+        GOOGLE_API_KEY="your_google_api_key" # Optional, if using Google LLMs/Embeddings
+
+        # Optional: Override CoreRAGEngine defaults
+        # LLM_PROVIDER="openai" # openai, ollama, google
+        # LLM_MODEL_NAME="gpt-4o"
+        # EMBEDDING_PROVIDER="openai" # openai, gpt4all, google
+        # EMBEDDING_MODEL_NAME="text-embedding-3-small"
+        ```
+
+## How to Run
+
+To start the InsightEngine application, run the following command from the project's root directory:
+
+```bash
+streamlit run src/main_app.py
