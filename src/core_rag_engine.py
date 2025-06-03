@@ -173,14 +173,14 @@ class CoreRAGEngine:
     # LLM Initialization
     # ---------------------
     def _init_llm(self, use_json_format: bool) -> Any:
-        p = self.llm_provider.lower()
-        if p == "openai":
+        provider = self.llm_provider.lower()
+        if provider == "openai":
             return self._init_openai_llm(use_json_format)
-        if p == "ollama":
+        if provider == "ollama":
             return self._init_ollama_llm(use_json_format)
-        if p == "google":
+        if provider == "google":
             return self._init_google_llm(use_json_format)
-        raise ValueError(f"Unsupported LLM provider: {p}")
+        raise ValueError(f"Unsupported LLM provider: {provider}")
 
     def _init_openai_llm(self, use_json: bool) -> ChatOpenAI:
         if not self.openai_api_key:
@@ -189,28 +189,34 @@ class CoreRAGEngine:
         args: Dict[str, Any] = {
             "model": self.llm_model_name,
             "temperature": self.temperature,
-            "openai_api_key": self.openai_api_key
+            "openai_api_key": self.openai_api_key,
         }
         if use_json:
+            # Request JSON response for structured parsing
             args["model_kwargs"] = {"response_format": {"type": "json_object"}}
             self.logger.info(f"JSON mode enabled for {self.llm_model_name}")
         return ChatOpenAI(**args)
 
     def _init_ollama_llm(self, use_json: bool) -> ChatOllama:
         fmt = "json" if use_json else None
+        # Ollama runs locally, format controls JSON or plain-text output
         return ChatOllama(model=self.llm_model_name, temperature=self.temperature, format=fmt)
+
 
     def _init_google_llm(self, use_json: bool) -> ChatGoogleGenerativeAI:
         if not self.google_api_key:
             self.logger.error("GOOGLE_API_KEY missing")
             raise ValueError("GOOGLE_API_KEY is required")
+        
         kwargs: Dict[str, Any] = {
             "model": self.llm_model_name,
             "temperature": self.temperature,
             "google_api_key": self.google_api_key,
-            "convert_system_message_to_human": True
+            "convert_system_message_to_human": True,
         }
+        
         if use_json:
+            # Request JSON output from Google model
             kwargs["model_kwargs"] = {"response_mime_type": "application/json"}
             self.logger.info(f"JSON mode enabled for Google model {self.llm_model_name}")
         return ChatGoogleGenerativeAI(**kwargs)
@@ -219,14 +225,14 @@ class CoreRAGEngine:
     # Embedding Initialization
     # ---------------------
     def _init_embedding_model(self) -> Any:
-        p = self.embedding_provider.lower()
-        if p == "openai":
+        provider = self.embedding_provider.lower()
+        if provider == "openai":
             return self._init_openai_embeddings()
-        if p == "gpt4all":
+        if provider == "gpt4all":
             return self._init_gpt4all_embeddings()
-        if p == "google":
+        if provider == "google":
             return self._init_google_embeddings()
-        raise ValueError(f"Unsupported embedding provider: {p}")
+        raise ValueError(f"Unsupported embedding provider: {provider}")
 
     def _init_openai_embeddings(self) -> OpenAIEmbeddings:
         if not self.openai_api_key:
@@ -252,17 +258,19 @@ class CoreRAGEngine:
         use_tok = tiktoken is not None and self.llm_provider.lower() == "openai"
         if use_tok:
             try:
+                # Token-based splitting for OpenAI models
                 return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
                     model_name=self.llm_model_name,
                     chunk_size=self.chunk_size,
-                    chunk_overlap=self.chunk_overlap
+                    chunk_overlap=self.chunk_overlap,
                 )
             except Exception:
-                self.logger.warning("Tiktoken splitter failed, falling back")
+                self.logger.warning("Tiktoken splitter failed, falling back to default")
+
         return RecursiveCharacterTextSplitter(
             chunk_size=self.chunk_size,
             chunk_overlap=self.chunk_overlap,
-            length_function=len
+            length_function=len,
         )
 
     # ---------------------
@@ -279,6 +287,7 @@ class CoreRAGEngine:
     # ---------------------
     def _create_document_relevance_grader_chain(self) -> LLMChain:
         parser = PydanticOutputParser(pydantic_object=RelevanceGrade)
+        
         prompt_template = (
             "You are a document relevance grader. Your task is to assess if a given document excerpt\n"
             "is relevant to the provided question.\n\n"
@@ -288,16 +297,19 @@ class CoreRAGEngine:
             "Document Excerpt:\n---\n{document_content}\n---\n\n"
             "Provide your JSON response:"
         )
+        
         prompt = ChatPromptTemplate.from_template(
             template=prompt_template,
             partial_variables={"format_instructions": parser.get_format_instructions()}
         )
+        
         chain = LLMChain(
             llm=self.json_llm,
             prompt=prompt,
             output_parser=parser,
             verbose=False
         )
+        
         self.logger.info("Created document_relevance_grader_chain with PydanticOutputParser.")
         return chain
 
@@ -308,20 +320,24 @@ class CoreRAGEngine:
             "'Latest User Question', rewrite the question to be clear, specific, and self-contained "
             "for retrieval. If already clear, return it as is."
         )
+        
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
             MessagesPlaceholder(variable_name="chat_history", optional=True),
             ("human", "Latest User Question to rewrite:\n{question}")
         ])
-        return LLMChain(
+
+        chain = LLMChain(
             llm=self.llm,
             prompt=prompt,
             output_parser=StrOutputParser(),
             verbose=False
         )
+        return chain
 
     def _create_answer_generation_chain(self) -> LLMChain:
         self.logger.info("Creating answer generation chain with chat history and feedback support.")
+        
         system_prompt = (
             "You are a helpful assistant. Your answer must be based *only* on the provided context documents.\n"
             "If the context lacks the answer, say you don't know. Do not invent details.\n"
@@ -330,17 +346,21 @@ class CoreRAGEngine:
             "Current Context Documents:\n---\n{context}\n---\n\n"
             "{optional_regeneration_prompt_header_if_feedback}\n"
         )
+        
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
             MessagesPlaceholder(variable_name="chat_history", optional=True),
             ("human", "{regeneration_feedback_if_any}{question}")
         ])
-        return LLMChain(
+
+        chain = LLMChain(
             llm=self.llm,
             prompt=prompt,
             output_parser=StrOutputParser(),
             verbose=False
-        )
+        )        
+        return chain
+
 
     def _create_grounding_check_chain(self) -> LLMChain:
         self.logger.info("Creating answer grounding check chain.")
@@ -356,12 +376,13 @@ class CoreRAGEngine:
             ),
             partial_variables={"format_instructions": parser.get_format_instructions()}
         )
-        return LLMChain(
+        chain = LLMChain(
             llm=self.json_llm,
             prompt=prompt,
             output_parser=parser,
             verbose=False
         )
+        return chain
 
     def _grounding_check_node(self, state: CoreGraphState) -> CoreGraphState:
         self.logger.info("NODE: Performing grounding check on generated answer...")
@@ -427,7 +448,7 @@ class CoreRAGEngine:
             self.logger.warning(f"Max grounding attempts ({max_attempts}) reached. Answer still not grounded. Ending with warning.")
             original_generation = state.get("generation", "")
             warning_message = (
-                "⚠️ **Self-Correction Incomplete:** The following answer could not be fully verified against the provided documents after attempts to correct it. "
+                "**Self-Correction Incomplete:** The following answer could not be fully verified against the provided documents after attempts to correct it. "
                 "Please use with caution.\n---\n"
             )
             state["generation"] = warning_message + original_generation
