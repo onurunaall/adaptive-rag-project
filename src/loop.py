@@ -15,6 +15,8 @@ from langgraph.graph import StateGraph, END
 from src.core_rag_engine import CoreRAGEngine
 from src.stock import fetch_stock_news_documents
 from src.scraper import scrape_urls_as_documents
+from src.config import settings as app_settings
+
 
 
 class AgentLoopState(Dict[str, Any]):
@@ -32,52 +34,51 @@ class AgentLoopState(Dict[str, Any]):
 class AgentLoopWorkflow:
     def __init__(
         self,
-        openai_api_key: str,
-        model: str = "gpt-4o",
+        openai_api_key: Optional[str] = None,
+        model: Optional[str] = None,
         core_rag_engine_instance: Optional[CoreRAGEngine] = None,
-        enable_tavily_search: bool = True,
-        enable_python_repl: bool = False,
+        enable_tavily_search: Optional[bool] = None,
+        enable_python_repl: Optional[bool] = None,
         custom_external_tools: Optional[List[Tool]] = None
     ):
-        self.openai_api_key = openai_api_key
-        self.model_name = model
+        self.openai_api_key = openai_api_key or app_settings.api.openai_api_key
+        self.model_name = model or app_settings.agent.agent_model_name
+
+        _enable_tavily = enable_tavily_search if enable_tavily_search is not None else app_settings.agent.enable_tavily_search_by_default
+        _enable_repl = enable_python_repl if enable_python_repl is not None else app_settings.agent.enable_python_repl_by_default
+
         self.core_rag_engine = core_rag_engine_instance
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(logging.INFO)
 
-        # Initialize the chat model
-        self.chat_model = ChatOpenAI(model=self.model_name openai_api_key=self.openai_api_key)
+        if not self.openai_api_key:
+            self.logger.error("OPENAI_API_KEY missing for AgentLoopWorkflow's ChatOpenAI.")
 
-        # Build tool list
+        self.chat_model = ChatOpenAI(model=self.model_name, openai_api_key=self.openai_api_key)
+
         self.tools: List[Tool] = []
 
-        # Tavily search
-        if enable_tavily_search:
-            tavily_key = os.getenv("TAVILY_API_KEY")
-            if tavily_key:
-                self.tools.append(TavilySearchResults(api_key=tavily_key, max_results=3))
+        if _enable_tavily:
+            tavily_key_from_config = app_settings.api.tavily_api_key
+            if tavily_key_from_config:
+                self.tools.append(TavilySearchResults(api_key=tavily_key_from_config, max_results=3))
             else:
-                self.logger.warning("TAVILY_API_KEY not set; TavilySearchResults tool disabled.")
+                self.logger.warning("TAVILY_API_KEY not set in config; TavilySearchResults tool disabled for agent.")
 
-        # Python REPL
-        if enable_python_repl:
+        if _enable_repl:
             self.repl = PythonREPL()
             self.tools.append(self._build_python_repl_tool())
 
-        # CoreRAGEngine tools
         if self.core_rag_engine:
             self.tools.extend(self._create_core_rag_engine_tools())
 
-        # Data feed tools
         self.tools.extend(self._create_data_feed_tools())
 
-        # Custom external tools
         if custom_external_tools:
             self.tools.extend(custom_external_tools)
 
         self.logger.info(f"Agent initialized with {len(self.tools)} tools.")
 
-        # System prompt guiding multi-step usage
         system_message = """ You are the InsightEngine Agent. Your job is to fulfill complex tasks by planning and using tools intelligently. For data acquisition:
         - Use FetchStockNews and ScrapeWebURLs to retrieve raw documents.
         - Then use InsightEngineIngest to add them into a named collection.
@@ -106,7 +107,6 @@ class AgentLoopWorkflow:
             ]
         )
 
-        # Create the agent and executor
         self.agent_runnable = create_json_chat_agent(
             llm=self.chat_model,
             tools=self.tools,
@@ -114,8 +114,8 @@ class AgentLoopWorkflow:
         )
         self.tool_executor = ToolExecutor(self.tools)
 
-        # Compile the LangGraph workflow
         self.compiled_graph = self.build_workflow().compile()
+
 
     def _build_python_repl_tool(self) -> Tool:
         return Tool(
@@ -157,15 +157,13 @@ class AgentLoopWorkflow:
     def _create_data_feed_tools(self) -> List[Tool]:
         tools: List[Tool] = []
 
-        tools.append(Tool(
-            name="FetchStockNews",
-            func=fetch_stock_news_documents,
-            description=(
-                "Fetch recent stock news articles. "
-                "Input: {'tickers_input': str or List[str], 'max_articles_per_ticker': int}. "
-                "Returns List[Document]."
-            )
-        ))
+        tools.append(Tool(name="FetchStockNews",
+                          func=fetch_stock_news_documents,
+                          description=("Fetch recent stock news articles. "
+                                       "Input: {'tickers_input': str or List[str], 'max_articles_per_ticker': int}. "
+                                       "Returns List[Document].")
+                       )
+                    )
 
         tools.append(Tool(
             name="ScrapeWebURLs",

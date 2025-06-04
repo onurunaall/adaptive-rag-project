@@ -30,6 +30,9 @@ setuptools.setup(
         "gpt4all",
         "pypdf",
         "PyPDF2",
+        "python-dotenv>=1.0.0",
+        "pydantic>=2.0",
+        "pydantic-settings>=2.0"
     ],
     classifiers=[
         "Programming Language :: Python :: 3",

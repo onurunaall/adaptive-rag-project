@@ -26,6 +26,9 @@ from langgraph.graph import StateGraph, END
 
 from pydantic import BaseModel, Field
 
+from src.config import settings as app_settings
+
+
 try:
     from streamlit.runtime.uploaded_file_manager import UploadedFile 
 except ImportError:
@@ -36,7 +39,9 @@ try:
 except ImportError:
     tiktoken = None
 
+
 load_dotenv()
+
 
 PROMPT_TEMPLATE = (
     "Answer the question based only on the following context.\n"
@@ -46,23 +51,67 @@ PROMPT_TEMPLATE = (
     "Answer:"
 )
 
+
 class GroundingCheck(BaseModel):
     """
     Structured output for answer grounding and hallucination check.
     """
-    is_grounded: bool = Field(description="Is the generated answer fully supported by the provided context? True or False.")
+    is_grounded: bool = Field(
+        description="Is the generated answer fully supported by the provided context? True or False."
+        )
+    
     ungrounded_statements: Optional[List[str]] = Field(
         default=None,
         description="List any specific statements in the answer that are NOT supported by the context."
     )
+
     correction_suggestion: Optional[str] = Field(
         default=None,
         description="If not grounded, suggest how to rephrase the answer to be grounded, or state no grounded answer is possible."
     )
 
+
+class RelevanceGrade(BaseModel):
+    """
+    Structured output for document relevance grading.
+    """
+    is_relevant: bool = Field(
+        description="Is the document excerpt relevant to the question? True or False."
+    )
+    
+    justification: Optional[str] = Field(
+        default=None,
+        description="Brief justification for the relevance decision (1-2 sentences)."
+    )
+
+
+class QueryAnalysis(BaseModel):
+    """
+    Structured output for sophisticated query analysis.
+    """
+    query_type: str = Field(
+        description="Classify the query's primary type (e.g., 'factual_lookup', 'comparison', 'summary_request', 'complex_reasoning', 'ambiguous', 'keyword_search_sufficient', 'greeting', 'not_a_question')."
+    )
+
+    main_intent: str = Field(
+        description="A concise sentence describing the primary user intent or what the user wants to achieve."
+    )
+
+    extracted_keywords: List[str] = Field(
+        default_factory=list,  # Default to an empty list
+        description="A list of key nouns, verbs, and named entities from the query that are critical for effective retrieval."
+    )
+
+    is_ambiguous: bool = Field(
+        default=False,
+        description="True if the query is vague, unclear, or open to multiple interpretations and might benefit from clarification before proceeding."
+    )
+
+
 class CoreGraphState(TypedDict):
     question: str
     original_question: Optional[str]
+    query_analysis_results: Optional[QueryAnalysis]
     documents: List[Document]
     context: str
     web_search_results: Optional[List[Document]]
@@ -76,17 +125,6 @@ class CoreGraphState(TypedDict):
     collection_name: Optional[str]
     chat_history: Optional[List[BaseMessage]]
 
-class RelevanceGrade(BaseModel):
-    """
-    Structured output for document relevance grading.
-    """
-    is_relevant: bool = Field(
-        description="Is the document excerpt relevant to the question? True or False."
-    )
-    justification: Optional[str] = Field(
-        default=None,
-        description="Brief justification for the relevance decision (1-2 sentences)."
-    )
 
 class CoreRAGEngine:
     """
@@ -95,45 +133,53 @@ class CoreRAGEngine:
 
     def __init__(
         self,
-        llm_provider: str = os.getenv("LLM_PROVIDER", "openai"),
-        llm_model_name: str = os.getenv("LLM_MODEL_NAME", "gpt-4o"),
-        embedding_provider: str = os.getenv("EMBEDDING_PROVIDER", "openai"),
-        embedding_model_name: Optional[str] = os.getenv("EMBEDDING_MODEL_NAME", "text-embedding-3-small"),
-        temperature: float = 0.0,
-        chunk_size: int = 500,
-        chunk_overlap: int = 100,
-        default_collection_name: str = "insight_engine_default",
+        llm_provider: Optional[str] = None,
+        llm_model_name: Optional[str] = None,
+        embedding_provider: Optional[str] = None,
+        embedding_model_name: Optional[str] = None,
+        temperature: Optional[float] = None,
+        chunk_size: Optional[int] = None,
+        chunk_overlap: Optional[int] = None,
+        default_collection_name: Optional[str] = None,
         persist_directory_base: Optional[str] = None,
-        tavily_api_key: Optional[str] = os.getenv("TAVILY_API_KEY"),
-        openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY"),
-        google_api_key: Optional[str] = os.getenv("GOOGLE_API_KEY"),
-        max_rewrite_retries: int = 1,
-        max_grounding_attempts: int = 1,
-    ):
-        # Configuration
-        self.llm_provider = llm_provider
-        self.llm_model_name = llm_model_name
-        self.embedding_provider = embedding_provider
-        self.embedding_model_name = embedding_model_name
-        self.temperature = temperature
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
-        self.default_collection_name = default_collection_name
-        self.tavily_api_key = tavily_api_key
-        self.openai_api_key = openai_api_key
-        self.google_api_key = google_api_key
-        self.max_rewrite_retries = max_rewrite_retries
-        self.max_grounding_attempts = max_grounding_attempts
+        tavily_api_key: Optional[str] = None,
+        openai_api_key: Optional[str] = None,
+        google_api_key: Optional[str] = None,
+        max_rewrite_retries: Optional[int] = None,
+        max_grounding_attempts: Optional[int] = None,
+    ) -> None:
+        # Load from AppSettings if parameters are not explicitly passed
+        self.llm_provider = llm_provider or app_settings.llm.llm_provider
+        _llm_model_name_from_config = app_settings.llm.get_model_name_for_provider(self.llm_provider)
+        self.llm_model_name = llm_model_name or _llm_model_name_from_config
 
-        # Persistence directory
-        base = persist_directory_base or tempfile.gettempdir()
+        self.embedding_provider = embedding_provider or app_settings.embedding.embedding_provider
+        _embedding_model_name_from_config = app_settings.embedding.get_model_name_for_provider(self.embedding_provider)
+        self.embedding_model_name = embedding_model_name or _embedding_model_name_from_config
+
+        self.temperature = temperature if temperature is not None else app_settings.llm.temperature
+        self.chunk_size = chunk_size or app_settings.engine.chunk_size
+        self.chunk_overlap = chunk_overlap or app_settings.engine.chunk_overlap
+        self.default_collection_name = default_collection_name or app_settings.engine.default_collection_name
+
+        # Persist directory logic
+        self.persist_directory_base = persist_directory_base if persist_directory_base is not None else app_settings.engine.persist_directory_base
+        base = self.persist_directory_base if self.persist_directory_base is not None else tempfile.gettempdir()
         self.persist_directory_base = os.path.join(base, "core_rag_engine_chroma")
         os.makedirs(self.persist_directory_base, exist_ok=True)
+
+        # API keys
+        self.tavily_api_key = tavily_api_key if tavily_api_key is not None else app_settings.api.tavily_api_key
+        self.openai_api_key = openai_api_key if openai_api_key is not None else app_settings.api.openai_api_key
+        self.google_api_key = google_api_key if google_api_key is not None else app_settings.api.google_api_key
+
+        self.max_rewrite_retries = max_rewrite_retries if max_rewrite_retries is not None else app_settings.engine.max_rewrite_retries
+        self.max_grounding_attempts = max_grounding_attempts if max_grounding_attempts is not None else app_settings.engine.max_grounding_attempts
 
         # Logger
         self._setup_logger()
 
-        # LLMs
+        # Initialize LLMs (normal and JSON-formatted)
         self.llm = self._init_llm(use_json_format=False)
         self.json_llm = self._init_llm(use_json_format=True)
 
@@ -144,16 +190,17 @@ class CoreRAGEngine:
         self.text_splitter = self._init_text_splitter()
         self.search_tool = self._init_search_tool()
 
-        # Chains
+        # Individual LLM Chains
         self.document_relevance_grader_chain = self._create_document_relevance_grader_chain()
-        self.query_rewriter_chain         = self._create_query_rewriter_chain()
-        self.answer_generation_chain      = self._create_answer_generation_chain()
-        self.grounding_check_chain        = self._create_grounding_check_chain()
+        self.query_rewriter_chain = self._create_query_rewriter_chain()
+        self.answer_generation_chain = self._create_answer_generation_chain()
+        self.grounding_check_chain = self._create_grounding_check_chain()
+        self.query_analyzer_chain = self._create_query_analyzer_chain()
 
-        # Compile workflow
+        # Compile the RAG workflow graph
         self._compile_rag_workflow()
 
-        # Storage for indexes
+        # Storage for vector stores and retrievers
         self.vectorstores: Dict[str, Chroma] = {}
         self.retrievers: Dict[str, Any] = {}
 
@@ -161,11 +208,14 @@ class CoreRAGEngine:
 
     def _setup_logger(self) -> None:
         logger = logging.getLogger(self.__class__.__name__)
+
+        # Only add handler if none exist to avoid duplicate logs
         if not logger.hasHandlers():
             handler = logging.StreamHandler()
             fmt = "%(asctime)s %(name)s %(levelname)s %(message)s"
             handler.setFormatter(logging.Formatter(fmt))
             logger.addHandler(handler)
+
         logger.setLevel(logging.INFO)
         self.logger = logger
 
@@ -181,6 +231,7 @@ class CoreRAGEngine:
         if provider == "google":
             return self._init_google_llm(use_json_format)
         raise ValueError(f"Unsupported LLM provider: {provider}")
+    
 
     def _init_openai_llm(self, use_json: bool) -> ChatOpenAI:
         if not self.openai_api_key:
@@ -311,6 +362,36 @@ class CoreRAGEngine:
         )
         
         self.logger.info("Created document_relevance_grader_chain with PydanticOutputParser.")
+        return chain
+    
+    def _create_query_analyzer_chain(self) -> LLMChain:
+        self.logger.info("Creating query analyzer chain.")
+        parser = PydanticOutputParser(pydantic_object=QueryAnalysis)
+
+        prompt_template_str = (
+            "You are an expert query understanding system. Analyze the given 'User Question'. "
+            "Consider the 'Chat History' (if provided) for context, but primarily focus on the current question. "
+            "Your goal is to understand the user's intent, the type of query, extract critical keywords, "
+            "and identify any ambiguities.\n\n"
+            "Respond with a JSON object matching this schema:\n{format_instructions}\n\n"
+            "Chat History (if any):\n{chat_history_formatted}\n\n"
+            "User Question:\n{question}\n\n"
+            "Provide your JSON response:"
+        )
+
+        prompt = ChatPromptTemplate.from_template(
+            template=prompt_template_str,
+            partial_variables={"format_instructions": parser.get_format_instructions()}
+            # input_variables inferred: ["question", "chat_history_formatted"]
+        )
+
+        chain = LLMChain(
+            llm=self.json_llm,
+            prompt=prompt,
+            output_parser=parser,
+            verbose=False
+        )
+
         return chain
 
     def _create_query_rewriter_chain(self) -> LLMChain:
@@ -468,6 +549,16 @@ class CoreRAGEngine:
             state["documents"] = []
             state["context"] = ""
             return state
+        
+        # TODO: Utilize state.get("query_analysis_results") for advanced retrieval:
+        # analysis = state.get("query_analysis_results")
+        # if analysis:
+        #     keywords = analysis.extracted_keywords
+        #     query_type = analysis.query_type
+        #     # - Modify retriever based on query_type (e.g., different top_k)
+        #     # - Implement hybrid search using keywords + semantic search
+        #     # - If sub_questions exist in analysis, iterate and retrieve for each
+
         docs = retriever.get_relevant_documents(state["question"])
         state["documents"] = docs
         state["context"] = "\n\n".join(d.page_content for d in docs)
@@ -518,6 +609,38 @@ class CoreRAGEngine:
             state["relevance_check_passed"] = False
 
         state["error_message"] = None
+        return state
+    
+    def _analyze_query_node(self, state: CoreGraphState) -> CoreGraphState:
+        self.logger.info("NODE: Analyzing query...")
+        question = state["question"]
+        chat_history = state.get("chat_history", [])
+
+        # Format chat history for the prompt
+        formatted_history_str = "\n".join(
+            [f"{msg.type.upper()}: {msg.content}" for msg in chat_history]
+        )
+        if not formatted_history_str:
+            formatted_history_str = "No chat history."
+
+        try:
+            analysis_result: QueryAnalysis = self.query_analyzer_chain.invoke({
+                "question": question,
+                "chat_history_formatted": formatted_history_str
+            })
+            state["query_analysis_results"] = analysis_result
+            self.logger.info(f"Query analysis complete: Type='{analysis_result.query_type}', Intent='{analysis_result.main_intent}'")
+            if analysis_result.is_ambiguous:
+                self.logger.warning(f"Query marked as ambiguous: {question}")
+
+        except Exception as e:
+            self.logger.error(f"Query analysis failed: {e}", exc_info=True)
+            state["query_analysis_results"] = None
+            state["error_message"] = (state.get("error_message") or "") + f" | Query analysis failed: {e}"
+
+        if state.get("original_question") is None:
+            state["original_question"] = question
+
         return state
 
     def _rewrite_query_node(self, state: CoreGraphState) -> CoreGraphState:
@@ -616,6 +739,17 @@ class CoreRAGEngine:
             "question": original_question
         }
 
+        # TODO: Utilize state.get("query_analysis_results") for dynamic prompt engineering:
+        # analysis = state.get("query_analysis_results")
+        # if analysis:
+        #     query_type = analysis.query_type
+        #     main_intent = analysis.main_intent
+        #     # - Pass query_type/main_intent to the answer_generation_chain
+        #     # - The chain's prompt would then need to be designed to use this information
+        #     #   to tailor the answer style (e.g., direct for factual, summary for summary_request)
+        #     # Update input_data_for_chain accordingly if prompt changes
+
+
         if regeneration_feedback:
             self.logger.info(f"Generating answer with regeneration feedback: {regeneration_feedback}")
             input_data_for_chain["optional_regeneration_prompt_header_if_feedback"] = (
@@ -645,6 +779,10 @@ class CoreRAGEngine:
         if self.search_tool:
             state["run_web_search"] = "Yes"
             return "web_search"
+        
+        # TODO: Consider using state.get("query_analysis_results").is_ambiguous
+        # to influence routing decisions if relevance is low.
+
         state["context"] = state.get("context", "") or "No relevant information found."
         return "generate_answer"
 
@@ -653,14 +791,22 @@ class CoreRAGEngine:
     # ---------------------
     def _compile_rag_workflow(self) -> Any:
         graph = StateGraph(CoreGraphState)
+
+        # New analysis node
+        graph.add_node("analyze_query", self._analyze_query_node)
         graph.add_node("retrieve", self._retrieve_node)
         graph.add_node("grade_documents", self._grade_documents_node)
         graph.add_node("rewrite_query", self._rewrite_query_node)
         graph.add_node("web_search", self._web_search_node)
         graph.add_node("generate_answer", self._generate_answer_node)
         graph.add_node("grounding_check", self._grounding_check_node)
-        graph.set_entry_point("retrieve")
 
+        # Set new entry point
+        graph.set_entry_point("analyze_query")
+
+        # Routing
+        graph.add_edge("analyze_query", "rewrite_query")
+        graph.add_edge("rewrite_query", "retrieve")
         graph.add_edge("retrieve", "grade_documents")
         graph.add_conditional_edges(
             "grade_documents",
@@ -671,7 +817,6 @@ class CoreRAGEngine:
                 "web_search": "web_search"
             }
         )
-        graph.add_edge("rewrite_query", "retrieve")
         graph.add_edge("web_search", "generate_answer")
         graph.add_edge("generate_answer", "grounding_check")
         graph.add_conditional_edges(
@@ -684,7 +829,7 @@ class CoreRAGEngine:
         )
 
         self.rag_workflow = graph.compile()
-        self.logger.info("RAG workflow compiled successfully.")
+        self.logger.info("RAG workflow compiled successfully with query analysis node.")
 
     # ---------------------
     # Public API: Ingestion
@@ -845,6 +990,7 @@ class CoreRAGEngine:
         initial_state: CoreGraphState = {
             "question": question,
             "original_question": question,
+            "query_analysis_results": None,
             "documents": [],
             "context": "",
             "web_search_results": None,

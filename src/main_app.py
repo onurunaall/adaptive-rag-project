@@ -2,7 +2,7 @@
 
 import os
 from typing import List
-
+import logging
 import streamlit as st
 
 from langchain.agents import AgentFinish, AgentAction
@@ -13,6 +13,11 @@ from src.stock import fetch_stock_news_documents
 from src.scraper import scrape_urls_as_documents
 from src.loop import AgentLoopWorkflow, AgentLoopState
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]
+    )
 
 # Initialize chat history
 if "qa_chat_history" not in st.session_state:
@@ -55,9 +60,9 @@ if st.sidebar.button("Ingest Documents"):
                 collection_name=collection_name,
                 recreate_collection=recreate_collection
             )
-            st.sidebar.success("✅ Documents ingested.")
+            st.sidebar.success("Documents ingested.")
         except Exception as e:
-            st.sidebar.error(f"❌ Ingestion failed: {e}")
+            st.sidebar.error(f"Ingestion failed: {e}")
 
 # Stock News Feed
 st.sidebar.markdown("---")
@@ -105,12 +110,12 @@ if st.sidebar.button("Ingest Stock News 📰"):
                         recreate_collection=recreate_stock_news_collection
                     )
                     st.sidebar.success(
-                        f"✅ Ingested {len(news_documents)} articles into '{stock_news_collection_name}'."
+                        f"Ingested {len(news_documents)} articles into '{stock_news_collection_name}'."
                     )
                 else:
                     st.sidebar.warning(f"No articles found for tickers: {stock_tickers_input}")
             except Exception as e:
-                st.sidebar.error(f"❌ Error during ingestion: {e}")
+                st.sidebar.error(f"Error during ingestion: {e}")
 
 # Web Scraper Feed
 st.sidebar.markdown("---")
@@ -174,7 +179,7 @@ if st.sidebar.button("Ingest Scraped Content 🔍"):
                         f"No content scraped from provided URLs: {urls_to_scrape}"
                     )
             except Exception as e:
-                st.sidebar.error(f"❌ Error during scraping or ingestion: {e}")
+                st.sidebar.error(f"Error during scraping or ingestion: {e}")
 
 st.header("Query the Collection")
 
@@ -287,5 +292,5 @@ if st.button("Execute Agent Task 🚀"):
                     st.info("Agent finished without a clear outcome.")
 
             except Exception as e:
-                st.error(f"❌ Error running Insight Agent: {e}")
+                st.error(f"Error running Insight Agent: {e}")
                 logging.exception("Insight Agent execution error")
