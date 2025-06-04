@@ -65,7 +65,8 @@ class EngineSettings(BaseSettings):
     persist_directory_base: Optional[str] = None
     max_rewrite_retries: int = 1
     max_grounding_attempts: int = 1
-
+    default_retrieval_top_k: int = 5
+    
     model_config = SettingsConfigDict(env_prefix='', extra='ignore')
 
 

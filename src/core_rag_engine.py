@@ -28,7 +28,6 @@ from pydantic import BaseModel, Field
 
 from src.config import settings as app_settings
 
-
 try:
     from streamlit.runtime.uploaded_file_manager import UploadedFile 
 except ImportError:
@@ -147,6 +146,7 @@ class CoreRAGEngine:
         google_api_key: Optional[str] = None,
         max_rewrite_retries: Optional[int] = None,
         max_grounding_attempts: Optional[int] = None,
+        default_retrieval_top_k: Optional[int] = None
     ) -> None:
         # Load from AppSettings if parameters are not explicitly passed
         self.llm_provider = llm_provider or app_settings.llm.llm_provider
@@ -175,7 +175,8 @@ class CoreRAGEngine:
 
         self.max_rewrite_retries = max_rewrite_retries if max_rewrite_retries is not None else app_settings.engine.max_rewrite_retries
         self.max_grounding_attempts = max_grounding_attempts if max_grounding_attempts is not None else app_settings.engine.max_grounding_attempts
-
+        self.default_retrieval_top_k = default_retrieval_top_k if default_retrieval_top_k is not None else app_settings.engine.default_retrieval_top_k
+        
         # Logger
         self._setup_logger()
 
@@ -218,6 +219,63 @@ class CoreRAGEngine:
 
         logger.setLevel(logging.INFO)
         self.logger = logger
+
+    def _get_persist_dir(self, collection_name: str) -> str: # Helper method if not already present
+        """Returns the specific persistence directory for a given collection name."""
+        return os.path.join(self.persist_directory_base, collection_name)
+
+    def _init_or_load_vectorstore(self, collection_name: str, recreate: bool = False) -> None:
+        """
+        Initializes an in-memory reference to a vector store, loading it from disk 
+        if it exists and is not being recreated, or preparing for a new one.
+        Ensures the retriever is set up with the current engine's default_retrieval_top_k.
+        """
+        persist_dir = self._get_persist_dir(collection_name)
+
+        if collection_name in self.vectorstores and not recreate:
+            # Already in memory and not recreating, ensure retriever is correctly configured if it wasn't
+            if collection_name not in self.retrievers or self.retrievers[collection_name].search_kwargs.get('k') != self.default_retrieval_top_k:
+                self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
+                    search_kwargs={'k': self.default_retrieval_top_k}
+                )
+                self.logger.info(f"Retriever for in-memory collection '{collection_name}' re-configured with k={self.default_retrieval_top_k}.")
+            return # Already loaded and not recreating
+
+        if recreate:
+            self.logger.info(f"Recreating collection '{collection_name}'. Removing existing if present.")
+            if os.path.exists(persist_dir):
+                shutil.rmtree(persist_dir)
+            if collection_name in self.vectorstores:
+                del self.vectorstores[collection_name]
+            if collection_name in self.retrievers:
+                del self.retrievers[collection_name]
+            # Ready for index_documents to create a new one.
+            # No further action here as index_documents will handle actual creation.
+            return
+
+        # If not in memory and not recreating, try to load from disk
+        if os.path.exists(persist_dir):
+            try:
+                self.logger.info(f"Loading existing vector store '{collection_name}' from {persist_dir}")
+                self.vectorstores[collection_name] = Chroma(
+                    collection_name=collection_name,
+                    embedding_function=self.embedding_model,
+                    persist_directory=persist_dir
+                )
+                self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
+                    search_kwargs={'k': self.default_retrieval_top_k}
+                )
+                self.logger.info(f"Successfully loaded '{collection_name}' with k={self.default_retrieval_top_k}.")
+            except Exception as e:
+                self.logger.error(f"Error loading vector store '{collection_name}' from {persist_dir}: {e}. A new one may be created if documents are indexed.", exc_info=True)
+                # Allow falling through to potentially create a new one if indexing happens later
+                if collection_name in self.vectorstores: # Should not happen if load failed, but defensive
+                    del self.vectorstores[collection_name]
+                if collection_name in self.retrievers:
+                    del self.retrievers[collection_name]
+        else:
+            self.logger.info(f"No persisted vector store found for '{collection_name}' at {persist_dir}. It will be created upon first indexing.")
+            # No specific action needed here; index_documents will create it if docs are provided.
 
     # ---------------------
     # LLM Initialization
@@ -542,27 +600,80 @@ class CoreRAGEngine:
     # Wrapper Node Methods
     # ---------------------
     def _retrieve_node(self, state: CoreGraphState) -> CoreGraphState:
-        name = state.get("collection_name") or self.default_collection_name
-        self._init_or_load_vectorstore(name, recreate=False)
-        retriever = self.retrievers.get(name)
-        if not retriever:
-            state["documents"] = []
-            state["context"] = ""
-            return state
-        
-        # TODO: Utilize state.get("query_analysis_results") for advanced retrieval:
-        # analysis = state.get("query_analysis_results")
-        # if analysis:
-        #     keywords = analysis.extracted_keywords
-        #     query_type = analysis.query_type
-        #     # - Modify retriever based on query_type (e.g., different top_k)
-        #     # - Implement hybrid search using keywords + semantic search
-        #     # - If sub_questions exist in analysis, iterate and retrieve for each
+        collection_name = state.get("collection_name") or self.default_collection_name
+        self.logger.info(f"NODE: Retrieving documents from collection '{collection_name}' for question: '{state['question']}'")
 
-        docs = retriever.get_relevant_documents(state["question"])
+        # Ensure vectorstore and retriever exist
+        self._init_or_load_vectorstore(collection_name, recreate=False)
+        retriever = self.retrievers.get(collection_name)
+
+        if not retriever:
+            self.logger.warning(f"No retriever found for collection '{collection_name}'. Returning empty documents.")
+            state["documents"] = []
+            state["context"] = "Retriever not available for the specified collection."
+            return state
+
+        current_question = state["question"]
+        query_analysis: Optional[QueryAnalysis] = state.get("query_analysis_results")
+
+        # 1. Determine dynamic top_k
+        retrieval_k = self.default_retrieval_top_k
+        if query_analysis:
+            self.logger.info(f"Using query analysis for retrieval: Type='{query_analysis.query_type}', Keywords='{query_analysis.extracted_keywords}'")
+            if query_analysis.query_type in ["summary_request", "complex_reasoning"]:
+                # For summaries / complex reasoning, retrieve more docs
+                retrieval_k = max(self.default_retrieval_top_k, 7)
+                self.logger.info(f"Adjusted top_k to {retrieval_k} for query type: {query_analysis.query_type}")
+            elif query_analysis.query_type == "factual_lookup":
+                # For factual lookups, retrieve fewer docs
+                retrieval_k = min(self.default_retrieval_top_k, 3)
+                self.logger.info(f"Adjusted top_k to {retrieval_k} for query type: {query_analysis.query_type}")
+
+        # 2. Augment query with keywords (if any)
+        search_query = current_question
+        if query_analysis and query_analysis.extracted_keywords:
+            keywords_str = " ".join(query_analysis.extracted_keywords)
+            search_query = f"{current_question} Keywords: {keywords_str}"
+            self.logger.info(f"Augmented search query with keywords: '{search_query}'")
+
+        # 3. Temporarily override retriever.k or retriever.search_kwargs['k'] if possible
+        original_k = None
+        try:
+            if hasattr(retriever, "k"):
+                original_k = retriever.k
+                retriever.k = retrieval_k
+            elif hasattr(retriever, "search_kwargs") and "k" in retriever.search_kwargs:
+                original_k = retriever.search_kwargs["k"]
+                retriever.search_kwargs["k"] = retrieval_k
+
+            self.logger.info(f"Attempting to retrieve top {retrieval_k} docs for: '{search_query}'")
+            docs = retriever.get_relevant_documents(search_query)
+            self.logger.info(f"Retrieved {len(docs)} documents.")
+        except Exception as e:
+            self.logger.error(f"Error during document retrieval: {e}", exc_info=True)
+            state["documents"] = []
+            state["context"] = "Error occurred during document retrieval."
+            state["error_message"] = (state.get("error_message") or "") + f" | Retrieval error: {e}"
+            # Restore original k if set
+            if original_k is not None:
+                if hasattr(retriever, "k"):
+                    retriever.k = original_k
+                elif hasattr(retriever, "search_kwargs") and "k" in retriever.search_kwargs:
+                    retriever.search_kwargs["k"] = original_k
+            return state
+
+        # Restore original k if it was changed
+        if original_k is not None:
+            if hasattr(retriever, "k"):
+                retriever.k = original_k
+            elif hasattr(retriever, "search_kwargs") and "k" in retriever.search_kwargs:
+                retriever.search_kwargs["k"] = original_k
+
+        # 4. Update state
         state["documents"] = docs
         state["context"] = "\n\n".join(d.page_content for d in docs)
         return state
+
 
     def _grade_documents_node(self, state: CoreGraphState) -> CoreGraphState:
         self.logger.info("NODE: Grading documents individually...")
@@ -893,8 +1004,8 @@ class CoreRAGEngine:
                 persist_directory=d
             )
             self.vectorstores[name] = vs_new
-            self.retrievers[name] = vs_new.as_retriever()
-            self.logger.info(f"Created vector store '{name}'")
+            self.retrievers[name] = vs_new.as_retriever(search_kwargs={'k': self.default_retrieval_top_k})
+            self.logger.info(f"Created vector store '{name}' with default k={self.default_retrieval_top_k}")
         else:
             vs.add_documents(docs)
             self.logger.info(f"Added {len(docs)} docs to '{name}'")
