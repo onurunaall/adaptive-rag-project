@@ -24,6 +24,7 @@ setuptools.setup(
         "langchain-experimental",
         "langchain-nomic",
         "langchainhub",
+        "langgraph.prebuilt",
         "streamlit",
         "tiktoken",
         "chromadb",
