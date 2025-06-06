@@ -71,12 +71,12 @@ def test_ingest_direct_documents(rag_engine, mock_embedding):
 
 
 def test_rag_direct_answer(populated_rag_engine, mocker):
-    """Tests the full RAG workflow by mocking all sub-chains."""
+    """Tests the full RAG workflow, mocking all sub-chains."""
     engine, collection = populated_rag_engine
-    # Mock all chains to isolate the test
     mocker.patch.object(engine.query_analyzer_chain, 'invoke', return_value={})
     mocker.patch.object(engine.query_rewriter_chain, 'invoke', return_value={'text': 'What is the capital of France?'})
     mocker.patch.object(engine.answer_generation_chain, 'invoke', return_value={'text': 'The answer is Paris.'})
+    mocker.patch.object(engine, '_grounding_check_node', return_value={"regeneration_feedback": None})
     
     res = engine.run_full_rag_workflow("What is the capital of France?", collection_name=collection)
     assert "Paris" in res["answer"]
@@ -84,15 +84,12 @@ def test_rag_direct_answer(populated_rag_engine, mocker):
 def test_rag_web_search_fallback(rag_engine, mocker):
     """Tests that the engine falls back to web search."""
     engine = rag_engine
-    engine.tavily_api_key = "fake_key" # Ensure tool is 'enabled'
-
-    # Mock nodes that should fail or be skipped
+    engine.tavily_api_key = "fake_key"
+    
     mocker.patch.object(engine, '_retrieve_node', return_value={"documents": []})
     mocker.patch.object(engine, '_grade_documents_node', return_value={"relevance_check_passed": False})
-    
-    # Mock the search tool's final output and the answer generation
-    mocker.patch.object(engine.search_tool, 'invoke', return_value=[{"content": "AlphaFold3 is new AI.", "url": "http://example.com"}])
-    mocker.patch.object(engine.answer_generation_chain, 'invoke', return_value={'text': 'AlphaFold3 is new AI.'})
+    mocker.patch.object(engine.search_tool, 'invoke', return_value=[{"content": "AlphaFold3 is an AI model."}])
+    mocker.patch.object(engine.answer_generation_chain, 'invoke', return_value={'text': 'Web result: AlphaFold3 is an AI model.'})
     
     res = engine.run_full_rag_workflow("What is AlphaFold 3?")
     assert "AlphaFold3" in res["answer"]
@@ -241,25 +238,21 @@ def test_document_relevance_grader_chain_bad_json(monkeypatch, rag_engine):
     assert "relevance_check_passed" in result
 
 
-def test_query_rewriter_chain_parsing(monkeypatch, rag_engine):
+def test_query_rewriter_chain_parsing(rag_engine, mocker):
     """Simulates LLM output for query rewriting."""
-    fake_chain = Mock()
-    fake_chain.invoke.return_value = {"text": "Rewritten: What is LangGraph?"} # Target invoke
+    mock_chain = Mock()
+    mock_chain.invoke.return_value = {"text": "Rewritten: What is LangGraph?"}
+    mocker.patch.object(rag_engine, 'query_rewriter_chain', mock_chain)
 
-    monkeypatch.setattr(rag_engine, "_create_query_rewriter_chain", lambda: fake_chain)
     state = {"question": "What about LG?", "original_question": "What about LG?"}
     result = rag_engine._rewrite_query_node(state)
-
     assert result["question"] == "Rewritten: What is LangGraph?"
 
 
-def test_ingest_handles_oserror(monkeypatch, rag_engine, mocker, mock_embedding): # Add mock_embedding
-    """
-    Simulate a PermissionError during vector store creation and ensure
-    the error is logged.
-    """
+def test_ingest_handles_oserror(monkeypatch, rag_engine, mocker, mock_embedding):
+    """Simulates a PermissionError and ensures the error is logged."""
     spy_logger = mocker.spy(rag_engine.logger, 'error')
-    monkeypatch.setattr("os.makedirs", Mock(side_effect=PermissionError("No permission")))
+    monkeypatch.setattr(os, "makedirs", Mock(side_effect=PermissionError("No permission")))
     
     rag_engine.ingest(
         direct_documents=[Document(page_content="fail")],

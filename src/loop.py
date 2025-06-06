@@ -352,11 +352,9 @@ class AgentLoopWorkflow:
     def build_workflow(self) -> StateGraph:
         """Builds the plan-reflect-execute workflow."""
         graph = StateGraph(AgentLoopState)
-        
         tool_node = ToolNode(self.tools)
         
         graph.add_node("plan_step", self.plan_step)
-        # The new get_current_task node prepares the input for the tool_node
         graph.add_node("get_task", self._get_current_task)
         graph.add_node("tool_node", tool_node)
         graph.add_node("reflection_step", self.reflection_step)
@@ -364,8 +362,6 @@ class AgentLoopWorkflow:
         graph.add_node("save_memory_step", self.save_memory_step)
 
         graph.set_entry_point("plan_step")
-        
-        # The flow now goes through get_task before tool_node
         graph.add_edge("plan_step", "get_task")
         graph.add_edge("get_task", "tool_node")
         graph.add_edge("tool_node", "reflection_step")
@@ -373,13 +369,20 @@ class AgentLoopWorkflow:
         graph.add_conditional_edges(
             "reflection_step",
             self.should_continue_planned_workflow,
-            {"continue": "get_task", "end": "summarize_step"} # Loop back to get the next task
+            {"continue": "get_task", "end": "summarize_step"}
         )
-        
         graph.add_edge("summarize_step", "save_memory_step")
         graph.add_edge("save_memory_step", END)
-        
         return graph
+    
+    def _get_current_task(self, state: AgentLoopState) -> dict:
+        """Helper to get the current agent action from the plan."""
+        step = state['current_step'] - 1
+        if step < 0 or step >= len(state.get("plan", {}).get("steps", [])):
+            return END
+        plan_step = state["plan"].steps[step]
+        action = AgentAction(tool=plan_step.tool, tool_input=plan_step.tool_input, log="")
+        return {"messages": [action]}
 
     def should_continue_planned_workflow(self, state: AgentLoopState) -> str:
         """Determines if the planned execution should continue."""
