@@ -59,9 +59,6 @@ def test_agent_plan_and_execute_workflow(core_engine_for_agent, mocker):
         return_value=mock_planner_chain
     )
 
-    # Spy on execute_step to verify each plan step is executed
-    spy_tool_executor = mocker.spy(agent.tool_executor, "invoke")
-
     # Ensure an OpenAI API key is available; otherwise skip this test
     key = os.getenv("OPENAI_API_KEY_TEST", os.getenv("OPENAI_API_KEY"))
     if not key:
@@ -73,6 +70,9 @@ def test_agent_plan_and_execute_workflow(core_engine_for_agent, mocker):
         core_rag_engine_instance=core_engine_for_agent,
         enable_tavily_search=False
     )
+
+    # Spy on execute_step to verify each plan step is executed
+    spy_tool_executor = mocker.spy(agent.tool_executor, "invoke")
 
     # Run the workflow with a sample goal
     goal = "Fetch news for NVDA, ingest it, and find out the key announcement."
