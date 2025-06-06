@@ -73,8 +73,10 @@ def test_ingest_direct_documents(rag_engine, mock_embedding):
 def test_rag_direct_answer(populated_rag_engine, mocker):
     """Tests the full RAG workflow, mocking the final LLM call."""
     engine, collection = populated_rag_engine
-    # Mock the answer generation to avoid API call
-    mocker.patch.object(engine.answer_generation_chain, 'invoke', return_value={'text': 'The answer is Paris.'})
+    # Correctly mock the answer generation chain
+    mock_chain = Mock()
+    mock_chain.invoke.return_value = {'text': 'The answer is Paris.'}
+    mocker.patch.object(engine, 'answer_generation_chain', mock_chain)
     
     res = engine.run_full_rag_workflow("What is the capital of France?", collection_name=collection)
     assert "Paris" in res["answer"]
@@ -85,13 +87,11 @@ def test_rag_web_search_fallback(populated_rag_engine, mocker):
     engine.tavily_api_key = "fake_key_for_test"
     
     mocker.patch.object(engine, '_grade_documents_node', return_value={"relevance_check_passed": False})
-    # Spy on the underlying wrapper's run method
-    spy_tavily = mocker.spy(engine.search_tool.api_wrapper, "run")
-    # Mock the answer generation
-    mocker.patch.object(engine.answer_generation_chain, 'invoke', return_value={'text': 'Web search result.'})
+    # Patch the tool's invoke method directly
+    mocker.patch.object(engine.search_tool, 'invoke', return_value="Web search result")
     
-    engine.run_full_rag_workflow("Query that requires web search", collection_name=collection)
-    spy_tavily.assert_called_once()
+    res = engine.run_full_rag_workflow("Query that requires web search", collection_name=collection)
+    assert "Web search result" in res["answer"]
 
 def test_grounding_check_node_on_failure(rag_engine, mocker):
     """
@@ -239,38 +239,40 @@ def test_document_relevance_grader_chain_bad_json(monkeypatch, rag_engine):
 
 def test_query_rewriter_chain_parsing(monkeypatch, rag_engine):
     """
-    Simulate LLM output for query rewriting and ensure
-    _rewrite_query_node sets 'rewritten_question' in the state.
+    Simulate LLM output for query rewriting and ensure _rewrite_query_node
+    correctly updates the 'question' field in the state.
     """
     fake_chain = Mock()
-    fake_chain.run.return_value = "Rewritten: What is LangGraph?"
+    # The chain returns a dict with a 'text' key
+    fake_chain.invoke.return_value = {"text": "Rewritten: What is LangGraph?"}
 
-    monkeypatch.setattr(
-        rag_engine,
-        "_create_query_rewriter_chain",
-        lambda: fake_chain
-    )
+    # Replace the creation method with one that returns our mock
+    monkeypatch.setattr(rag_engine, "_create_query_rewriter_chain", lambda: fake_chain)
 
-    state = {"question": "What about LG?", "history": []}
+    state = {"question": "What about LG?", "history": [], "original_question": "What about LG?"}
     result = rag_engine._rewrite_query_node(state)
 
-    assert "rewritten_question" in result
+    # Assert that the 'question' key was updated to the new value
+    assert result["question"] == "Rewritten: What is LangGraph?"
 
 
 def test_ingest_handles_oserror(monkeypatch, rag_engine):
     """
-    Simulate a PermissionError when creating directories during ingest.
-    Verify ingest propagates that error.
+    Simulate a PermissionError during vector store creation and ensure
+    the error is logged without crashing the application.
     """
-    monkeypatch.setattr(
-        "os.makedirs",
-        Mock(side_effect=PermissionError("No permission"))
+    # Spy on the engine's logger to check its output
+    spy_logger = mocker.spy(rag_engine.logger, 'error')
+    
+    # Mock os.makedirs to raise the error
+    monkeypatch.setattr("os.makedirs", Mock(side_effect=PermissionError("No permission")))
+    
+    # Run ingest, which should now catch the error and log it
+    rag_engine.ingest(
+        direct_documents=[Document(page_content="fail")],
+        collection_name="err_test",
+        recreate_collection=True
     )
-
-    with pytest.raises(PermissionError):
-        rag_engine.ingest(
-            direct_documents=[Document(page_content="fail", metadata={})],
-            collection_name="err_test",
-            recreate_collection=True
-        )
-
+    
+    # Assert that the logger's error method was called
+    spy_logger.assert_called_once()
