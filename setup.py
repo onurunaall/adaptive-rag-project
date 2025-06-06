@@ -22,6 +22,7 @@ setuptools.setup(
         "langgraph",
         "langchain-google-genai",
         "langchain-experimental",
+        "langgraph.prebuilt.tool_executor",
         "langchain-nomic",
         "langchainhub",
         "streamlit",
