@@ -256,7 +256,7 @@ def test_query_rewriter_chain_parsing(monkeypatch, rag_engine):
     assert result["question"] == "Rewritten: What is LangGraph?"
 
 
-def test_ingest_handles_oserror(monkeypatch, rag_engine):
+def test_ingest_handles_oserror(monkeypatch, rag_engine, mocker):
     """
     Simulate a PermissionError during vector store creation and ensure
     the error is logged without crashing the application.
