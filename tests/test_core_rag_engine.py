@@ -1,15 +1,32 @@
-mport pytest
+import pytest
 import os
 import shutil
 import json
 from unittest.mock import Mock
+
 from src.core_rag_engine import CoreRAGEngine, CoreGraphState
 from langchain.schema import Document
 
+
+class RerankScore:
+    """
+    Simple container for a relevance score and justification.
+    Used to mock reranking outputs.
+    """
+    def __init__(self, relevance_score: float, justification: str) -> None:
+        self.relevance_score = relevance_score
+        self.justification = justification
+
+
 @pytest.fixture(scope="module")
 def rag_engine():
+    """
+    Initialize a CoreRAGEngine with a temporary persistence directory.
+    Cleans up the directory after tests complete.
+    """
     test_dir = "test_chroma_db"
     os.makedirs(test_dir, exist_ok=True)
+
     engine = CoreRAGEngine(
         llm_provider="openai",
         embedding_provider="openai",
@@ -17,24 +34,43 @@ def rag_engine():
         openai_api_key=os.getenv("OPENAI_API_KEY_TEST", os.getenv("OPENAI_API_KEY")),
         tavily_api_key=os.getenv("TAVILY_API_KEY_TEST", os.getenv("TAVILY_API_KEY")),
     )
+
     yield engine
+
+    # Remove the test directory after all tests in this module run
     shutil.rmtree(test_dir)
 
 def test_ingest_direct_documents(rag_engine):
+    """
+    Test that ingesting a list of Document instances indexes them into Chroma,
+    and that retrieving documents returns expected content.
+    """
     cname = "test_ingest_direct"
     docs = [
         Document(page_content="All about AI agents.", metadata={"source": "doc1"}),
         Document(page_content="LangGraph is a library for building stateful, multi-actor applications with LLMs.", metadata={"source": "doc2"})
     ]
+
+    # Ingest directly provided documents, recreate collection
     rag_engine.ingest(direct_documents=docs, collection_name=cname, recreate_collection=True)
+
+    # Verify the Chroma SQLite file exists in the persistence directory
     path = os.path.join(rag_engine.persist_directory_base, cname, "chroma.sqlite3")
     assert os.path.exists(path)
-    res = rag_engine._retrieve_node({"question": "What is LangGraph?", "collection_name": cname})
-    assert len(res.get("documents", [])) > 0
-    assert any("LangGraph" in doc.page_content for doc in res["documents"])
+
+    # Retrieve documents for a query and verify expected content
+    state = {"question": "What is LangGraph?", "collection_name": cname}
+    res = rag_engine._retrieve_node(state)
+    docs_retrieved = res.get("documents", [])
+    assert len(docs_retrieved) > 0
+    assert any("LangGraph" in doc.page_content for doc in docs_retrieved)
 
 @pytest.fixture(scope="module")
 def populated_rag_engine(rag_engine):
+    """
+    Fixture that ingests two documents into a collection named 'rag_test_data'.
+    Returns a tuple of (engine, collection_name).
+    """
     cname = "rag_test_data"
     docs = [
         Document(page_content="Paris is the capital of France. It is known for the Eiffel Tower.", metadata={"source": "france_doc"}),
@@ -44,80 +80,212 @@ def populated_rag_engine(rag_engine):
     return rag_engine, cname
 
 def test_rag_direct_answer(populated_rag_engine):
+    """
+    Test that running the full RAG workflow on a simple factual question
+    returns an answer containing 'Paris' and includes source metadata.
+    """
     engine, collection = populated_rag_engine
     res = engine.run_full_rag_workflow("What is the capital of France?", collection_name=collection)
-    assert "Paris" in res["answer"]
-    assert any("france_doc" in src["source"] for src in res["sources"])
+
+    answer = res["answer"]
+    sources = res["sources"]
+
+    assert "Paris" in answer
+    assert any("france_doc" in src["source"] for src in sources)
 
 def test_rag_web_search_fallback(populated_rag_engine, mocker):
+    """
+    Test that when document grading fails (no relevant docs), the engine
+    falls back to web search. Requires a valid Tavily API key.
+    """
     engine, collection = populated_rag_engine
+
     if not engine.tavily_api_key:
         pytest.skip("Tavily API key not set.")
-    def mock_grade(_): return {"documents": [], "context": "", "relevance_check_passed": False}
-    mocker.patch.object(engine, '_grade_documents_node', side_effect=mock_grade)
-    spy_tavily = mocker.spy(engine.search_tool, 'invoke')
+
+    # Patch _grade_documents_node to simulate no relevant documents
+    def mock_grade(state):
+        return {
+            "documents": [],
+            "context": "",
+            "relevance_check_passed": False
+        }
+
+    mocker.patch.object(
+        engine, "_grade_documents_node",
+        side_effect=mock_grade
+    )
+
+    # Spy on the search_tool.invoke method to ensure it's called
+    spy_tavily = mocker.spy(engine.search_tool, "invoke")
+
     question = "What is the latest news on AlphaFold 3?"
-    res = engine.run_full_rag_workflow(question, collection_name=collection)
+    res = engine.run_full_rag_workflow(
+        question,
+        collection_name=collection
+    )
+
     spy_tavily.assert_called_once()
     assert res["answer"]
     assert any("http" in src.get("source", "") for src in res["sources"])
 
 def test_rag_grounding_check_and_self_correction(populated_rag_engine, mocker):
+    """
+    Test that grounding check is invoked and that the answer does not hallucinate.
+    """
     engine, collection = populated_rag_engine
-    q = "Does the Eiffel Tower grant wishes according to the document about France?"
-    spy_ground = mocker.spy(engine, '_grounding_check_node')
-    spy_generate = mocker.spy(engine, '_generate_answer_node')
+    q = ("Does the Eiffel Tower grant wishes according to the document about France?")
+
+    # Spy on grounding check and generation nodes
+    spy_ground = mocker.spy(engine, "_grounding_check_node")
+    spy_generate = mocker.spy(engine, "_generate_answer_node")
+
     engine.max_grounding_attempts = 2
+
     res = engine.run_full_rag_workflow(q, collection_name=collection)
+
+    # Ensure grounding check was called at least once
     assert spy_ground.call_count > 0
+
     answer = res["answer"].lower()
-    assert "does not say" in answer or "no" in answer or "⚠️" in answer
+    assert (
+        "does not say" in answer
+        or "no" in answer
+        or "⚠️" in answer)
+
+    # Reset to default for other tests
+    engine.max_grounding_attempts = 1
     engine.max_grounding_attempts = 1
 
+def test_rerank_documents_node_sorts_correctly(rag_engine, mocker):
+    """
+    Test that _rerank_documents_node sorts documents based on descending
+    relevance scores returned by a mocked reranker chain.
+    """
+    docs = [
+        Document(page_content="Low relevance doc.", metadata={"source": "c"}),
+        Document(page_content="High relevance doc.", metadata={"source": "a"}),
+        Document(page_content="Medium relevance doc.", metadata={"source": "b"})
+    ]
+
+    # Mock scores: intentionally out of input order
+    mock_scores = [
+        RerankScore(relevance_score=0.1, justification="Low"),
+        RerankScore(relevance_score=0.9, justification="High"),
+        RerankScore(relevance_score=0.5, justification="Medium"),
+    ]
+
+    # Patch the reranker chain's invoke method to return mock scores in sequence
+    mocker.patch.object(rag_engine.document_reranker_chain,"invoke",side_effect=mock_scores)
+    initial_state = {"question": "A test question","original_question": "A test question","documents": docs}
+    result_state = rag_engine._rerank_documents_node(initial_state)
+
+    sorted_docs = result_state["documents"]
+
+    assert len(sorted_docs) == 3
+    assert sorted_docs[0].metadata["source"] == "a"  # highest score 0.9
+    assert sorted_docs[1].metadata["source"] == "b"  # next score 0.5
+    assert sorted_docs[2].metadata["source"] == "c"  # lowest score 0.1
+
+
 def test_document_relevance_grader_chain_parsing(monkeypatch, rag_engine):
-    # Simulate LLM chain output: correct JSON
+    """
+    Simulate correct JSON output from relevance grader chain and ensure
+    _grade_documents_node sets 'relevance_check_passed' in the returned state.
+    """
     correct_response = '{"relevant": true, "reason": "Matches user question"}'
     fake_chain = Mock()
     fake_chain.run.return_value = correct_response
-    monkeypatch.setattr(rag_engine, "_create_document_relevance_grader_chain", lambda: fake_chain)
 
-    result = rag_engine._grade_documents_node({
+    monkeypatch.setattr(
+        rag_engine,
+        "_create_document_relevance_grader_chain",
+        lambda: fake_chain
+    )
+
+    state = {
         "question": "What is AI?",
         "documents": [Document(page_content="AI is the simulation of human intelligence.", metadata={})],
         "collection_name": "test"
-    })
+    }
+    result = rag_engine._grade_documents_node(state)
+
     assert "relevance_check_passed" in result
 
 def test_document_relevance_grader_chain_bad_json(monkeypatch, rag_engine):
-    # Simulate LLM chain output: bad JSON
+    """
+    Simulate malformed output (non-JSON) from relevance grader chain and
+    verify _grade_documents_node handles it without crashing.
+    """
     fake_chain = Mock()
-    fake_chain.run.return_value = 'NOT JSON'
-    monkeypatch.setattr(rag_engine, "_create_document_relevance_grader_chain", lambda: fake_chain)
-    # Should not crash, should mark relevance as False or similar fallback
-    result = rag_engine._grade_documents_node({
+    fake_chain.run.return_value = "NOT JSON"
+
+    monkeypatch.setattr(
+        rag_engine,
+        "_create_document_relevance_grader_chain",
+        lambda: fake_chain
+    )
+
+    state = {
         "question": "AI?",
         "documents": [Document(page_content="No relevance here.", metadata={})],
-        "collection_name": "test"
-    })
+            "collection_name": "test"
+    }
+    result = rag_engine._grade_documents_node(state)
+
     assert "relevance_check_passed" in result
 
+
 def test_query_rewriter_chain_parsing(monkeypatch, rag_engine):
-    # Simulate LLM chain output for query rewriting
+    """
+    Simulate LLM output for query rewriting and ensure
+    _rewrite_query_node sets 'rewritten_question' in the state.
+    """
     fake_chain = Mock()
     fake_chain.run.return_value = "Rewritten: What is LangGraph?"
-    monkeypatch.setattr(rag_engine, "_create_query_rewriter_chain", lambda: fake_chain)
+
+    monkeypatch.setattr(
+        rag_engine,
+        "_create_query_rewriter_chain",
+        lambda: fake_chain
+    )
+
     state = {"question": "What about LG?", "history": []}
     result = rag_engine._rewrite_query_node(state)
+
     assert "rewritten_question" in result
 
+
 def test_ingest_handles_oserror(monkeypatch, rag_engine):
-    # Simulate disk failure on ingest (e.g., permission denied)
-    monkeypatch.setattr("os.makedirs", Mock(side_effect=PermissionError("No permission")))
+    """
+    Simulate a PermissionError when creating directories during ingest.
+    Verify ingest propagates that error.
+    """
+    monkeypatch.setattr(
+        "os.makedirs",
+        Mock(side_effect=PermissionError("No permission"))
+    )
+
     with pytest.raises(PermissionError):
-        rag_engine.ingest(direct_documents=[Document(page_content="fail", metadata={})], collection_name="err_test", recreate_collection=True)
+        rag_engine.ingest(
+            direct_documents=[Document(page_content="fail", metadata={})],
+            collection_name="err_test",
+            recreate_collection=True
+        )
+
 
 def test_run_full_rag_workflow_handles_llm_error(monkeypatch, rag_engine):
-    # Simulate LLM failure in answer generation
-    monkeypatch.setattr(rag_engine, "_generate_answer_node", Mock(side_effect=Exception("LLM failure")))
+    """
+    Simulate an exception in _generate_answer_node and ensure
+    run_full_rag_workflow propagates the exception.
+    """
+    monkeypatch.setattr(
+        rag_engine,
+        "_generate_answer_node",
+        Mock(side_effect=Exception("LLM failure"))
+    )
+
     with pytest.raises(Exception):
-        rag_engine.run_full_rag_workflow("Some Q?", collection_name="failcase")
+        rag_engine.run_full_rag_workflow(
+            "Some Q?",
+            collection_name="failcase"
