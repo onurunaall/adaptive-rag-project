@@ -4,7 +4,7 @@ import shutil
 import json
 from unittest.mock import Mock
 
-from src.core_rag_engine import CoreRAGEngine, CoreGraphState
+from src.core_rag_engine import CoreRAGEngine, CoreGraphState, GroundingCheck
 from langchain.schema import Document
 
 
@@ -129,33 +129,96 @@ def test_rag_web_search_fallback(populated_rag_engine, mocker):
     assert res["answer"]
     assert any("http" in src.get("source", "") for src in res["sources"])
 
-def test_rag_grounding_check_and_self_correction(populated_rag_engine, mocker):
+def test_grounding_check_node_on_failure(rag_engine, mocker):
     """
-    Test that grounding check is invoked and that the answer does not hallucinate.
+    Tests that if the grounding check fails, the node correctly populates
+    the 'regeneration_feedback' field and increments attempts.
     """
-    engine, collection = populated_rag_engine
-    q = ("Does the Eiffel Tower grant wishes according to the document about France?")
+    # 1. Prepare a mock GroundingCheck output indicating failure
+    mock_failure_output = GroundingCheck(
+        is_grounded=False,
+        ungrounded_statements=["The sky is green."],
+        correction_suggestion="The answer should stick to the context."
+    )
+    mocker.patch.object(
+        rag_engine.grounding_check_chain,
+        "invoke",
+        return_value=mock_failure_output
+    )
 
-    # Spy on grounding check and generation nodes
-    spy_ground = mocker.spy(engine, "_grounding_check_node")
-    spy_generate = mocker.spy(engine, "_generate_answer_node")
+    # 2. Define initial state with a mismatched generation and context
+    initial_state = {
+        "question": "What color is the sky?",
+        "context": "The context says the sky is blue.",
+        "generation": "The sky is green.",
+        "grounding_check_attempts": 0,
+    }
 
-    engine.max_grounding_attempts = 2
+    # 3. Execute the grounding check node
+    result_state = rag_engine._grounding_check_node(initial_state)
 
-    res = engine.run_full_rag_workflow(q, collection_name=collection)
+    # 4. Verify that feedback was generated and attempt count incremented
+    assert result_state["regeneration_feedback"] is not None
+    assert "The following statements were ungrounded" in result_state["regeneration_feedback"]
+    assert "Suggestion for correction" in result_state["regeneration_feedback"]
+    assert result_state["grounding_check_attempts"] == 1
 
-    # Ensure grounding check was called at least once
-    assert spy_ground.call_count > 0
 
-    answer = res["answer"].lower()
-    assert (
-        "does not say" in answer
-        or "no" in answer
-        or "⚠️" in answer)
+def test_grounding_check_node_on_success(rag_engine, mocker):
+    """
+    Tests that if the grounding check passes, 'regeneration_feedback'
+    remains None and attempts increment.
+    """
+    # 1. Prepare a mock GroundingCheck output indicating success
+    mock_success_output = GroundingCheck(is_grounded=True)
+    mocker.patch.object(
+        rag_engine.grounding_check_chain,
+        "invoke",
+        return_value=mock_success_output
+    )
 
-    # Reset to default for other tests
-    engine.max_grounding_attempts = 1
-    engine.max_grounding_attempts = 1
+    # 2. Define initial state where generation matches context
+    initial_state = {
+        "context": "The sky is blue.",
+        "generation": "The sky is blue.",
+        "grounding_check_attempts": 0,
+    }
+
+    # 3. Execute the grounding check node
+    result_state = rag_engine._grounding_check_node(initial_state)
+
+    # 4. Verify no feedback and that attempt count incremented
+    assert result_state["regeneration_feedback"] is None
+    assert result_state["grounding_check_attempts"] == 1
+
+
+def test_route_after_grounding_check(rag_engine):
+    """
+    Tests the routing logic after grounding check:
+      - If no feedback: END
+      - If feedback and attempts remain: 'generate_answer'
+      - If feedback and max attempts reached: END
+    """
+    # Case 1: Grounding passed (no feedback) -> should return END
+    state_success = {"regeneration_feedback": None}
+    assert rag_engine._route_after_grounding_check(state_success) == END
+
+    # Case 2: Grounding failed, attempts remain -> should return 'generate_answer'
+    state_retry = {
+        "regeneration_feedback": "Please fix.",
+        "grounding_check_attempts": 1
+    }
+    rag_engine.max_grounding_attempts = 2
+    assert rag_engine._route_after_grounding_check(state_retry) == "generate_answer"
+
+    # Case 3: Grounding failed, max attempts reached -> should return END
+    state_max_attempts = {
+        "regeneration_feedback": "Please fix.",
+        "grounding_check_attempts": 2
+    }
+    rag_engine.max_grounding_attempts = 2
+    assert rag_engine._route_after_grounding_check(state_max_attempts) == END
+
 
 def test_rerank_documents_node_sorts_correctly(rag_engine, mocker):
     """
