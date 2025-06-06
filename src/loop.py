@@ -14,7 +14,7 @@ from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_community.vectorstores import Chroma
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.tools import Tool
-from langgraph.prebuilt import ToolExecutor
+from langgraph.prebuilt import ToolNode
 from langgraph.graph import StateGraph, END
 
 from pydantic import BaseModel, Field
@@ -97,8 +97,6 @@ class AgentLoopWorkflow:
             self.tools.extend(custom_external_tools)
 
         self.logger.info(f"Agent initialized with {len(self.tools)} tools.")
-
-        self.tool_executor = ToolExecutor(self.tools)
 
         self.memory_store = None
         self.memory_retriever = None
@@ -344,30 +342,14 @@ class AgentLoopWorkflow:
             state["error"] = f"Failed to generate a plan: {e}"
         return state
     
-    def execute_step(self, state: AgentLoopState) -> AgentLoopState:
-        """Executes a single step of the plan."""
-        step_index = state["current_step"]
-        plan = state["plan"]
-        step = plan.steps[step_index - 1]
-        self.logger.info(f"EXECUTING STEP {step_index}: Using tool '{step.tool}'")
-
-        try:
-            # The ToolExecutor expects an AgentAction-like object
-            action = AgentAction(tool=step.tool, tool_input=step.tool_input, log="")
-            result = self.tool_executor.invoke(action)
-            state.setdefault("past_steps", []).append((action, str(result)))
-        except Exception as e:
-            self.logger.error(f"EXECUTION: Step {step_index} failed. Error: {e}", exc_info=True)
-            state["error"] = f"Step {step_index} ({step.tool}) failed: {e}"
-
-        state["current_step"] = step_index + 1
-        return state
-    
     def build_workflow(self) -> StateGraph:
         """Builds the plan-reflect-execute workflow."""
         graph = StateGraph(AgentLoopState)
         
+        tool_node = ToolNode(self.tools)
+
         graph.add_node("plan_step", self.plan_step)
+        graph.add_node("tool_node", tool_node)
         graph.add_node("execute_step", self.execute_step)
         graph.add_node("reflection_step", self.reflection_step)
         graph.add_node("summarize_step", self.summarize_step)
@@ -375,14 +357,14 @@ class AgentLoopWorkflow:
 
         graph.set_entry_point("plan_step")
         
-        graph.add_edge("plan_step", "execute_step")
-        graph.add_edge("execute_step", "reflection_step")
+        graph.add_edge("plan_step", "tool_node")
+        graph.add_edge("tool_node", "reflection_step")
         
         graph.add_conditional_edges(
             "reflection_step",
             self.should_continue_planned_workflow,
             {
-                "continue": "execute_step",
+                "continue": "tool_node",
                 "end": "summarize_step"
             }
         )
