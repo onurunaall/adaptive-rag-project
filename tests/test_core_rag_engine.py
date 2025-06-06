@@ -336,16 +336,3 @@ def test_ingest_handles_oserror(monkeypatch, rag_engine):
             recreate_collection=True
         )
 
-"""
-def test_run_full_rag_workflow_handles_llm_error(monkeypatch, rag_engine):
-    monkeypatch.setattr(
-        rag_engine,
-        "_generate_answer_node",
-        Mock(side_effect=Exception("LLM failure"))
-    )
-
-    with pytest.raises(Exception):
-        rag_engine.run_full_rag_workflow(
-            "Some Q?",
-            collection_name="failcase"
-"""
