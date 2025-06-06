@@ -60,7 +60,7 @@ def test_agent_plan_and_execute_workflow(core_engine_for_agent, mocker):
     )
 
     # Spy on execute_step to verify each plan step is executed
-    spy_tool_executor = mocker.spy(AgentLoopWorkflow, "execute_step")
+    spy_tool_executor = mocker.spy(agent.tool_executor, "invoke")
 
     # Ensure an OpenAI API key is available; otherwise skip this test
     key = os.getenv("OPENAI_API_KEY_TEST", os.getenv("OPENAI_API_KEY"))

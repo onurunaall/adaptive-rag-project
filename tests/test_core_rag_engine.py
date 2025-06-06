@@ -2,21 +2,28 @@ import pytest
 import os
 import shutil
 import json
-from unittest.mock import Mock
+
+from unittest.mock import Mock, patch
 from langgraph.graph import END
-from src.core_rag_engine import CoreRAGEngine, CoreGraphState, GroundingCheck
 from langchain.schema import Document
 
+from src.core_rag_engine import CoreRAGEngine, GroundingCheck, RerankScore
 
-class RerankScore:
+@pytest.fixture(scope="module")
+def populated_rag_engine(rag_engine): # Add 'mocker' if not present, though patch is used here
     """
-    Simple container for a relevance score and justification.
-    Used to mock reranking outputs.
+    Fixture that ingests two documents into a collection named 'rag_test_data'.
     """
-    def __init__(self, relevance_score: float, justification: str) -> None:
-        self.relevance_score = relevance_score
-        self.justification = justification
-
+    cname = "rag_test_data"
+    docs = [
+        Document(page_content="Paris is the capital of France. It is known for the Eiffel Tower.", metadata={"source": "france_doc"}),
+        Document(page_content="The OpenAI GPT-4 model is a large language model.", metadata={"source": "openai_doc"})
+    ]
+    # Use patch to mock the embedding call during ingestion
+    with patch('langchain_openai.embeddings.base.OpenAIEmbeddings.embed_documents') as mock_embed:
+        mock_embed.return_value = [[0.1] * 1536, [0.2] * 1536] # Return fake vectors
+        rag_engine.ingest(direct_documents=docs, collection_name=cname, recreate_collection=True)
+    return rag_engine, cname
 
 @pytest.fixture(scope="module")
 def rag_engine():
@@ -62,22 +69,13 @@ def test_ingest_direct_documents(rag_engine):
     state = {"question": "What is LangGraph?", "collection_name": cname}
     res = rag_engine._retrieve_node(state)
     docs_retrieved = res.get("documents", [])
+
+    with patch('langchain_openai.embeddings.base.OpenAIEmbeddings.embed_documents') as mock_embed:
+        mock_embed.return_value = [[0.1] * 1536, [0.2] * 1536]
+        rag_engine.ingest(direct_documents=docs, collection_name=cname, recreate_collection=True)
+
     assert len(docs_retrieved) > 0
     assert any("LangGraph" in doc.page_content for doc in docs_retrieved)
-
-@pytest.fixture(scope="module")
-def populated_rag_engine(rag_engine):
-    """
-    Fixture that ingests two documents into a collection named 'rag_test_data'.
-    Returns a tuple of (engine, collection_name).
-    """
-    cname = "rag_test_data"
-    docs = [
-        Document(page_content="Paris is the capital of France. It is known for the Eiffel Tower.", metadata={"source": "france_doc"}),
-        Document(page_content="The OpenAI GPT-4 model is a large language model.", metadata={"source": "openai_doc"})
-    ]
-    rag_engine.ingest(direct_documents=docs, collection_name=cname, recreate_collection=True)
-    return rag_engine, cname
 
 def test_rag_direct_answer(populated_rag_engine):
     """
@@ -134,19 +132,16 @@ def test_grounding_check_node_on_failure(rag_engine, mocker):
     Tests that if the grounding check fails, the node correctly populates
     the 'regeneration_feedback' field and increments attempts.
     """
-    # 1. Prepare a mock GroundingCheck output indicating failure
     mock_failure_output = GroundingCheck(
         is_grounded=False,
         ungrounded_statements=["The sky is green."],
         correction_suggestion="The answer should stick to the context."
     )
-    mocker.patch.object(
-        rag_engine.grounding_check_chain,
-        "invoke",
-        return_value=mock_failure_output
-    )
+    mock_chain = Mock()
+    mock_chain.invoke.return_value = mock_failure_output
 
-    # 2. Define initial state with a mismatched generation and context
+    mocker.patch.object(rag_engine, 'grounding_check_chain', mock_chain)
+
     initial_state = {
         "question": "What color is the sky?",
         "context": "The context says the sky is blue.",
@@ -154,10 +149,8 @@ def test_grounding_check_node_on_failure(rag_engine, mocker):
         "grounding_check_attempts": 0,
     }
 
-    # 3. Execute the grounding check node
     result_state = rag_engine._grounding_check_node(initial_state)
 
-    # 4. Verify that feedback was generated and attempt count incremented
     assert result_state["regeneration_feedback"] is not None
     assert "The following statements were ungrounded" in result_state["regeneration_feedback"]
     assert "Suggestion for correction" in result_state["regeneration_feedback"]
@@ -169,14 +162,10 @@ def test_grounding_check_node_on_success(rag_engine, mocker):
     Tests that if the grounding check passes, 'regeneration_feedback'
     remains None and attempts increment.
     """
-    # 1. Prepare a mock GroundingCheck output indicating success
     mock_success_output = GroundingCheck(is_grounded=True)
-    mocker.patch.object(
-        rag_engine.grounding_check_chain,
-        "invoke",
-        return_value=mock_success_output
-    )
-
+    mock_chain = Mock()
+    mock_chain.invoke.return_value = mock_success_output
+    mocker.patch.object(rag_engine, 'grounding_check_chain', mock_chain)
     # 2. Define initial state where generation matches context
     initial_state = {
         "context": "The sky is blue.",
