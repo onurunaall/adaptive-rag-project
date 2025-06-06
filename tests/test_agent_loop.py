@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 from src.core_rag_engine import CoreRAGEngine
 from src.loop import AgentLoopWorkflow, Plan, PlanStep
-from langchain.agents import AgentFinish
+from langchain_core.agents import AgentAction, AgentFinish
 
 @pytest.fixture(scope="module")
 def core_engine_for_agent():
