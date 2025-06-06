@@ -83,6 +83,16 @@ class RelevanceGrade(BaseModel):
         description="Brief justification for the relevance decision (1-2 sentences)."
     )
 
+class RerankScore(BaseModel):
+    """
+    Pydantic model for contextual re-ranking scores.
+    """
+    relevance_score: float = Field(
+        description="A score from 0.0 to 1.0 indicating the document's direct relevance to answering the question."
+    )
+    justification: str = Field(
+        description="A brief justification for the assigned score."
+    )
 
 class QueryAnalysis(BaseModel):
     """
@@ -193,6 +203,7 @@ class CoreRAGEngine:
 
         # Individual LLM Chains
         self.document_relevance_grader_chain = self._create_document_relevance_grader_chain()
+        self.document_reranker_chain = self._create_document_reranker_chain()
         self.query_rewriter_chain = self._create_query_rewriter_chain()
         self.answer_generation_chain = self._create_answer_generation_chain()
         self.grounding_check_chain = self._create_grounding_check_chain()
@@ -420,6 +431,35 @@ class CoreRAGEngine:
         )
         
         self.logger.info("Created document_relevance_grader_chain with PydanticOutputParser.")
+        return chain
+    
+    def _create_document_reranker_chain(self) -> LLMChain:
+        parser = PydanticOutputParser(pydantic_object=RerankScore)
+
+        prompt_template = (
+            "You are a document re-ranking expert. Your task is to score a document's relevance "
+            "for directly answering the given question.\n"
+            "Assign a relevance score from 0.0 (not relevant) to 1.0 (perfectly relevant).\n\n"
+            "Respond with a JSON object matching this schema:\n"
+            "{format_instructions}\n\n"
+            "Question: {question}\n\n"
+            "Document Excerpt:\n---\n{document_content}\n---\n\n"
+            "Provide your JSON response:"
+        )
+
+        prompt = ChatPromptTemplate.from_template(
+            template=prompt_template,
+            partial_variables={"format_instructions": parser.get_format_instructions()}
+        )
+
+        chain = LLMChain(
+            llm=self.json_llm,
+            prompt=prompt,
+            output_parser=parser,
+            verbose=False
+        )
+
+        self.logger.info("Created document_reranker_chain with PydanticOutputParser.")
         return chain
     
     def _create_query_analyzer_chain(self) -> LLMChain:
@@ -673,7 +713,37 @@ class CoreRAGEngine:
         state["documents"] = docs
         state["context"] = "\n\n".join(d.page_content for d in docs)
         return state
+    
+    def _rerank_documents_node(self, state: CoreGraphState) -> CoreGraphState:
+        self.logger.info("NODE: Re-ranking retrieved documents...")
+        question = state.get("original_question") or state["question"]
+        docs = state.get("documents", [])
 
+        if not docs:
+            self.logger.info("No documents to re-rank.")
+            return state
+
+        docs_with_scores = []
+        for doc in docs:
+            try:
+                score_result: RerankScore = self.document_reranker_chain.invoke({
+                    "question": question,
+                    "document_content": doc.page_content
+                })
+                docs_with_scores.append((doc, score_result.relevance_score))
+                self.logger.debug(f"Document from '{doc.metadata.get('source')}' scored: {score_result.relevance_score}")
+            except Exception as e:
+                self.logger.error(f"Error re-ranking document: {e}. Assigning score of 0.")
+                docs_with_scores.append((doc, 0.0))
+
+        # Sort documents by score in descending order
+        sorted_docs = sorted(docs_with_scores, key=lambda x: x[1], reverse=True)
+        
+        # Update state with the re-ranked documents
+        state["documents"] = [doc for doc, score in sorted_docs]
+        self.logger.info("Finished re-ranking documents.")
+        
+        return state
 
     def _grade_documents_node(self, state: CoreGraphState) -> CoreGraphState:
         self.logger.info("NODE: Grading documents individually...")
@@ -906,6 +976,7 @@ class CoreRAGEngine:
         # New analysis node
         graph.add_node("analyze_query", self._analyze_query_node)
         graph.add_node("retrieve", self._retrieve_node)
+        graph.add_node("rerank_documents", self._rerank_documents_node)
         graph.add_node("grade_documents", self._grade_documents_node)
         graph.add_node("rewrite_query", self._rewrite_query_node)
         graph.add_node("web_search", self._web_search_node)
@@ -918,7 +989,9 @@ class CoreRAGEngine:
         # Routing
         graph.add_edge("analyze_query", "rewrite_query")
         graph.add_edge("rewrite_query", "retrieve")
-        graph.add_edge("retrieve", "grade_documents")
+        graph.add_edge("retrieve", "rerank_documents")
+        graph.add_edge("rerank_documents", "grade_documents")
+        
         graph.add_conditional_edges(
             "grade_documents",
             self._route_after_grading,

@@ -240,7 +240,7 @@ agent_goal_input = st.text_area(
     )
 )
 
-if st.button("Execute Agent Task 🚀"):
+if st.button("Execute Agent Task"):
     if not agent_goal_input.strip():
         st.warning("Please describe a task or goal for the Insight Agent.")
     else:
@@ -266,7 +266,7 @@ if st.button("Execute Agent Task 🚀"):
                 )
 
                 st.subheader("Agent Execution Log & Results")
-                steps = final_state.get("intermediate_steps", [])
+                steps = final_state.get("past_steps", [])
                 if steps:
                     with st.expander("Show Agent's Steps", expanded=False):
                         for i, (action, obs) in enumerate(steps, 1):
@@ -283,7 +283,7 @@ if st.button("Execute Agent Task 🚀"):
                 st.subheader("Agent's Final Output")
                 outcome = final_state.get("agent_outcome")
                 if isinstance(outcome, AgentFinish):
-                    st.success("✅ Agent Task Completed!")
+                    st.success("Agent Task Completed!")
                     st.markdown(outcome.return_values.get("output", ""))
                 elif isinstance(outcome, AgentAction):
                     st.warning("Agent stopped at an action (expected to finish).")

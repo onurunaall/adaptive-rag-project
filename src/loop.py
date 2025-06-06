@@ -1,16 +1,19 @@
 import os
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, TypedDict, Union
 
-from langchain.agents import create_json_chat_agent, AgentAction, AgentFinish
+from langchain.agents import AgentAction, AgentFinish
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage
 from langchain_experimental.utilities import PythonREPL
 from langchain_community.tools.tavily_search import TavilySearchResults
-from langchain_openai import ChatOpenAI
+from langchain_community.vectorstores import Chroma
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.tools import Tool
 from langgraph.prebuilt.tool_executor import ToolExecutor
 from langgraph.graph import StateGraph, END
+
+from pydantic import BaseModel, Field
 
 from src.core_rag_engine import CoreRAGEngine
 from src.stock import fetch_stock_news_documents
@@ -19,16 +22,28 @@ from src.config import settings as app_settings
 
 
 
-class AgentLoopState(Dict[str, Any]):
+class PlanStep(BaseModel):
+    """A single step in the execution plan."""
+    tool: str = Field(description="The name of the tool to use for this step.")
+    tool_input: Dict[str, Any] = Field(description="The dictionary input for the tool.")
+    reasoning: str = Field(description="The reasoning behind choosing this tool and input.")
+
+class Plan(BaseModel):
+    """The complete, multi-step plan to achieve the user's goal."""
+    steps: List[PlanStep] = Field(description="The list of sequential steps to execute.")
+
+class AgentLoopState(TypedDict):
     """
-    State dictionary for the agent loop.
-    Keys:
-      - input: str (the user's high-level goal)
-      - chat_history: List[BaseMessage]
-      - agent_outcome: AgentAction | AgentFinish | None
-      - intermediate_steps: List[ tuple(AgentAction, str) ]
+    State dictionary for the plan-and-execute agent loop with memory.
     """
-    pass
+    input: str
+    plan: Plan
+    past_steps: List[tuple]
+    current_step: int
+    scratchpad: List[str]
+    final_summary: str
+    retrieved_memories: Optional[str]
+    error: Optional[str]
 
 
 class AgentLoopWorkflow:
@@ -79,40 +94,26 @@ class AgentLoopWorkflow:
 
         self.logger.info(f"Agent initialized with {len(self.tools)} tools.")
 
-        system_message = """ You are the InsightEngine Agent. Your job is to fulfill complex tasks by planning and using tools intelligently. For data acquisition:
-        - Use FetchStockNews and ScrapeWebURLs to retrieve raw documents.
-        - Then use InsightEngineIngest to add them into a named collection.
-        For reasoning:
-        - Use InsightEngineRAGWorkflow with a question and collection_name to get answers from ingested content.
-        Always think step-by-step:
-        1. Plan which tool to call.
-        2. Execute the tool.
-        3. Observe output, then plan next step.
-        Provide final answer when finished.
-        """
-
-        self.prompt = ChatPromptTemplate(
-            input_variables=["input", "chat_history", "tool_names", "agent_scratchpad"],
-            messages=[
-                SystemMessage(content=system_message),
-                MessagesPlaceholder(variable_name="chat_history", optional=True),
-                HumanMessage(content=(
-                    "TOOLS\n------\n"
-                    "Available tools: {tool_names}\n\n"
-                    "When you call a tool, respond with a JSON object "
-                    "with 'action' and 'action_input'.\n\n"
-                    "USER GOAL\n----------\n{input}"
-                )),
-                MessagesPlaceholder(variable_name="agent_scratchpad")
-            ]
-        )
-
-        self.agent_runnable = create_json_chat_agent(
-            llm=self.chat_model,
-            tools=self.tools,
-            prompt=self.prompt
-        )
         self.tool_executor = ToolExecutor(self.tools)
+
+        self.memory_store = None
+        self.memory_retriever = None
+        try:
+            memory_persist_dir = os.path.join(tempfile.gettempdir(), "agent_memory_store")
+            os.makedirs(memory_persist_dir, exist_ok=True)
+            
+            embedding_model = self.core_rag_engine.embedding_model if self.core_rag_engine else OpenAIEmbeddings()
+
+            self.memory_store = Chroma(
+                collection_name="agent_long_term_memory",
+                embedding_function=embedding_model,
+                persist_directory=memory_persist_dir
+            )
+            self.memory_retriever = self.memory_store.as_retriever(search_kwargs={'k': 3})
+            self.logger.info(f"Long-term memory initialized at {memory_persist_dir}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to initialize long-term memory: {e}", exc_info=True)
 
         self.compiled_graph = self.build_workflow().compile()
 
@@ -177,50 +178,264 @@ class AgentLoopWorkflow:
 
         self.logger.info(f"Created {len(tools)} data feed tools.")
         return tools
+    
+    def _create_planner_chain(self) -> LLMChain:
+        """Creates a chain that generates a plan from a user goal and past memories."""
+        parser = PydanticOutputParser(pydantic_object=Plan)
+        tool_descriptions = "\n".join(f"- {tool.name}: {tool.description}" for tool in self.tools)
 
-    def run_agent(self, state: AgentLoopState) -> AgentLoopState:
-        outcome = self.agent_runnable.invoke({
-            "input": state["input"],
-            "chat_history": state.get("chat_history", []),
-            "agent_scratchpad": []
-        })
-        state["agent_outcome"] = outcome
-        return state
-
-    def execute_tools(self, state: AgentLoopState) -> AgentLoopState:
-        action: AgentAction = state["agent_outcome"]
-        result = self.tool_executor.invoke(action)
-        state.setdefault("intermediate_steps", []).append((action, str(result)))
-        return state
-
-    def should_continue(self, state: AgentLoopState) -> str:
-        return "end" if isinstance(state.get("agent_outcome"), AgentFinish) else "continue"
-
-    def build_workflow(self) -> StateGraph:
-        graph = StateGraph(AgentLoopState)
-        graph.add_node("agent", self.run_agent)
-        graph.add_node("action", self.execute_tools)
-        graph.set_entry_point("agent")
-        graph.add_conditional_edges(
-            "agent",
-            self.should_continue,
-            {"continue": "action", "end": END}
+        prompt_template = (
+            "You are an expert planner. Your task is to create a step-by-step plan to achieve the user's goal using the available tools.\n"
+            "If you have been provided with summaries of relevant past tasks, use them to inform your plan.\n\n"
+            "Relevant Past Task Summaries (Memories):\n---\n{retrieved_memories}\n---\n\n"
+            "Available Tools:\n{tool_descriptions}\n\n"
+            "Respond with a JSON object matching this schema:\n{format_instructions}\n\n"
+            "User Goal: {goal}\n\n"
+            "Provide your JSON plan:"
         )
-        graph.add_edge("action", "agent")
+        prompt = ChatPromptTemplate.from_template(
+            template=prompt_template,
+            partial_variables={
+                "format_instructions": parser.get_format_instructions(),
+                "tool_descriptions": tool_descriptions,
+            }
+        )
+        
+        json_llm = self.core_rag_engine.json_llm if self.core_rag_engine else self.chat_model
+        
+        chain = LLMChain(llm=json_llm, prompt=prompt, output_parser=parser)
+
+        return chain
+    
+    def _create_reflection_chain(self) -> LLMChain:
+        """Creates a chain that reflects on a completed plan step."""
+        prompt = ChatPromptTemplate.from_template(
+            "You are an expert agent. You just completed a step in your plan.\n"
+            "Goal: {goal}\n"
+            "Plan Step: {step_reasoning}\n"
+            "Tool Used: {tool_name}\n"
+            "Tool Output: {observation}\n\n"
+            "Based on this, what is the key takeaway or result from this step? Be concise (1-2 sentences)."
+        )
+        return LLMChain(llm=self.chat_model, prompt=prompt, output_parser=StrOutputParser())
+
+    def reflection_step(self, state: AgentLoopState) -> AgentLoopState:
+        """Reflects on the last executed step and adds to the scratchpad."""
+        self.logger.info("REFLECTING on last step...")
+        reflection_chain = self._create_reflection_chain()
+
+        # Get the last executed step details
+        step_index = state["current_step"] - 1 # execute_step increments it
+        plan_step = state["plan"].steps[step_index - 1]
+        action, observation = state["past_steps"][-1]
+
+        try:
+            reflection = reflection_chain.invoke({
+                "goal": state["input"],
+                "step_reasoning": plan_step.reasoning,
+                "tool_name": plan_step.tool,
+                "observation": observation,
+            })
+            state.setdefault("scratchpad", []).append(reflection)
+            self.logger.info(f"REFLECTION: '{reflection}'")
+        except Exception as e:
+            self.logger.error(f"Reflection failed: {e}", exc_info=True)
+            state.setdefault("scratchpad", []).append(f"Error reflecting on step {step_index}: {e}")
+
+        return state
+
+    def _create_summary_chain(self) -> LLMChain:
+        """Creates a chain that generates a final summary from the scratchpad."""
+        prompt = ChatPromptTemplate.from_template(
+            "You are an expert agent. You have completed your plan successfully.\n"
+            "Your original goal was: {goal}\n"
+            "You have completed a series of steps and recorded your key takeaways in a scratchpad.\n\n"
+            "Scratchpad:\n---\n{scratchpad_content}\n---\n\n"
+            "Based on your original goal and the scratchpad, provide a final, comprehensive answer for the user."
+        )
+        return LLMChain(llm=self.chat_model, prompt=prompt, output_parser=StrOutputParser())
+
+    def summarize_step(self, state: AgentLoopState) -> AgentLoopState:
+        """Generates a final summary from the scratchpad contents."""
+        self.logger.info("SUMMARIZING results...")
+        summary_chain = self._create_summary_chain()
+        
+        scratchpad_content = "\n".join(f"- {s}" for s in state.get("scratchpad", []))
+        
+        try:
+            summary = summary_chain.invoke({
+                "goal": state["input"],
+                "scratchpad_content": scratchpad_content,
+            })
+            state["final_summary"] = summary
+        except Exception as e:
+            self.logger.error(f"Summarization failed: {e}", exc_info=True)
+            state["final_summary"] = f"Error generating final summary: {e}"
+            
+        return state
+    
+    def _create_task_summary_chain(self) -> LLMChain:
+        """Creates a chain that summarizes a completed task for long-term memory."""
+        prompt = ChatPromptTemplate.from_template(
+            "You are an expert agent. You just completed a task. Your goal was: '{goal}'.\n"
+            "You generated the following final summary: '{final_summary}'.\n\n"
+            "Create a concise summary of this completed task to store in your long-term memory. "
+            "This memory should be useful for planning similar tasks in the future. "
+            "Focus on the goal and the key outcome. (1-3 sentences)."
+        )
+        return LLMChain(llm=self.chat_model, prompt=prompt, output_parser=StrOutputParser())
+
+    def save_memory_step(self, state: AgentLoopState) -> AgentLoopState:
+        """Summarizes the completed task and saves it to the long-term memory store."""
+        if not self.memory_store or state.get("error"):
+            self.logger.warning("Skipping memory storage due to error or uninitialized store.")
+            return state
+
+        self.logger.info("SAVING TO MEMORY: Creating task summary...")
+        task_summary_chain = self._create_task_summary_chain()
+        try:
+            memory_text = task_summary_chain.invoke({
+                "goal": state["input"],
+                "final_summary": state["final_summary"]
+            })
+            
+            # Save the summary as a Document
+            memory_doc = Document(page_content=memory_text)
+            self.memory_store.add_documents([memory_doc])
+            self.logger.info(f"SAVED TO MEMORY: '{memory_text}'")
+        except Exception as e:
+            self.logger.error(f"Failed to save task summary to memory: {e}", exc_info=True)
+            
+        return state
+
+    def plan_step(self, state: AgentLoopState) -> AgentLoopState:
+        """Recalls memories and generates a plan."""
+        self.logger.info("PLANNING: Recalling long-term memories...")
+        
+        # Recall relevant memories
+        retrieved_memories = "No relevant memories found."
+        if self.memory_retriever:
+            try:
+                retrieved_docs = self.memory_retriever.get_relevant_documents(state["input"])
+                if retrieved_docs:
+                    retrieved_memories = "\n\n".join([doc.page_content for doc in retrieved_docs])
+                    self.logger.info(f"Recalled {len(retrieved_docs)} memories.")
+            except Exception as e:
+                self.logger.error(f"Memory retrieval failed: {e}", exc_info=True)
+        
+        state["retrieved_memories"] = retrieved_memories
+
+        self.logger.info("PLANNING: Generating execution plan...")
+        planner_chain = self._create_planner_chain()
+        try:
+            plan = planner_chain.invoke({
+                "goal": state["input"],
+                "retrieved_memories": retrieved_memories
+            })
+            state["plan"] = plan
+            state["current_step"] = 1
+            self.logger.info(f"PLANNING: Plan generated with {len(plan.steps)} steps.")
+        except Exception as e:
+            self.logger.error(f"PLANNING: Failed to generate plan. Error: {e}", exc_info=True)
+            state["error"] = f"Failed to generate a plan: {e}"
+        return state
+    
+    def execute_step(self, state: AgentLoopState) -> AgentLoopState:
+        """Executes a single step of the plan."""
+        step_index = state["current_step"]
+        plan = state["plan"]
+        step = plan.steps[step_index - 1]
+        self.logger.info(f"EXECUTING STEP {step_index}: Using tool '{step.tool}'")
+
+        try:
+            # The ToolExecutor expects an AgentAction-like object
+            action = AgentAction(tool=step.tool, tool_input=step.tool_input, log="")
+            result = self.tool_executor.invoke(action)
+            state.setdefault("past_steps", []).append((action, str(result)))
+        except Exception as e:
+            self.logger.error(f"EXECUTION: Step {step_index} failed. Error: {e}", exc_info=True)
+            state["error"] = f"Step {step_index} ({step.tool}) failed: {e}"
+
+        state["current_step"] = step_index + 1
+        return state
+    
+    def build_workflow(self) -> StateGraph:
+        """Builds the plan-reflect-execute workflow."""
+        graph = StateGraph(AgentLoopState)
+        
+        graph.add_node("plan_step", self.plan_step)
+        graph.add_node("execute_step", self.execute_step)
+        graph.add_node("reflection_step", self.reflection_step)
+        graph.add_node("summarize_step", self.summarize_step)
+        graph.add_node("save_memory_step", self.save_memory_step)
+
+        graph.set_entry_point("plan_step")
+        
+        graph.add_edge("plan_step", "execute_step")
+        graph.add_edge("execute_step", "reflection_step")
+        
+        graph.add_conditional_edges(
+            "reflection_step",
+            self.should_continue_planned_workflow,
+            {
+                "continue": "execute_step",
+                "end": "summarize_step"
+            }
+        )
+        
+        graph.add_edge("summarize_step", "save_memory_step")
+        graph.add_edge("save_memory_step", END)
+        
         return graph
 
+    def should_continue_planned_workflow(self, state: AgentLoopState) -> str:
+        """Determines if the planned execution should continue."""
+        if state.get("error"):
+            self.logger.error(f"Workflow ending due to error: {state['error']}")
+            return END
+        
+        # The 'current_step' has been incremented by execute_step already
+        last_step_executed = state["current_step"] - 1
+        if last_step_executed >= len(state["plan"].steps):
+            self.logger.info("Workflow finished: All plan steps executed. Proceeding to summary.")
+            return "end" # Signal to go to summarize_step
+        
+        return "continue"
+    
     def run_workflow(self, goal: str) -> AgentLoopState:
         """
-        Public method: run the agent on a high-level goal.
-        Returns the final state containing intermediate_steps and agent_outcome.
+        Public method: runs the agent on a high-level goal by planning and executing.
+        Returns the final state containing the plan, scratchpad, and final summary.
         """
         initial_state: AgentLoopState = {
             "input": goal,
-            "chat_history": [],
-            "agent_outcome": None,
-            "intermediate_steps": []
+            "plan": None,
+            "past_steps": [],
+            "current_step": 0,
+            "scratchpad": [],
+            "final_summary": "",
+            "retrieved_memories": None,
+            "error": None
         }
-        final_state = None
-        for st in self.compiled_graph.stream(initial_state):
-            final_state = st
+        
+        final_state = self.compiled_graph.invoke(initial_state)
+
+        # Structure the final output for compatibility
+        if not final_state.get("error"):
+            final_output = {
+                "output": final_state.get("final_summary", "Agent task finished without a summary."),
+                "scratchpad": final_state.get("scratchpad", []),
+                "recalled_memories": final_state.get("retrieved_memories", "None")
+            }
+            final_state["agent_outcome"] = AgentFinish(return_values=final_output, log="")
+        else:
+            # +++ ADD THIS ELSE BLOCK FOR ROBUST ERROR HANDLING +++
+            error_message = final_state.get('error', 'Unknown error')
+            final_output = {
+                "output": f"Agent task failed with error: {error_message}"
+            }
+            final_state["agent_outcome"] = AgentFinish(return_values=final_output, log=f"Error: {error_message}")
+        
+        
         return final_state
+    
