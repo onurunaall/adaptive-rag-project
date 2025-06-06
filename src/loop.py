@@ -343,20 +343,21 @@ class AgentLoopWorkflow:
         return state
     
     def build_workflow(self) -> StateGraph:
-        """Builds the plan-reflect-execute workflow."""
+        """Builds the plan-reflect-execute workflow using ToolNode."""
         graph = StateGraph(AgentLoopState)
         
+        # The new ToolNode takes a list of tools and handles execution
         tool_node = ToolNode(self.tools)
-
+        
         graph.add_node("plan_step", self.plan_step)
-        graph.add_node("tool_node", tool_node)
-        graph.add_node("execute_step", self.execute_step)
+        graph.add_node("tool_node", tool_node) # Use "tool_node"
         graph.add_node("reflection_step", self.reflection_step)
         graph.add_node("summarize_step", self.summarize_step)
         graph.add_node("save_memory_step", self.save_memory_step)
 
         graph.set_entry_point("plan_step")
         
+        # Correct the flow: plan -> tool_node -> reflect
         graph.add_edge("plan_step", "tool_node")
         graph.add_edge("tool_node", "reflection_step")
         
@@ -364,7 +365,7 @@ class AgentLoopWorkflow:
             "reflection_step",
             self.should_continue_planned_workflow,
             {
-                "continue": "tool_node",
+                "continue": "tool_node", # Loop back to the tool_node for the next step
                 "end": "summarize_step"
             }
         )
@@ -373,7 +374,6 @@ class AgentLoopWorkflow:
         graph.add_edge("save_memory_step", END)
         
         return graph
-
     def should_continue_planned_workflow(self, state: AgentLoopState) -> str:
         """Determines if the planned execution should continue."""
         if state.get("error"):
