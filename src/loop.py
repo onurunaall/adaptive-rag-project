@@ -342,38 +342,45 @@ class AgentLoopWorkflow:
             state["error"] = f"Failed to generate a plan: {e}"
         return state
     
+    def _get_current_task(self, state: AgentLoopState):
+        """Helper to get the current agent action from the plan."""
+        step = state['current_step'] - 1
+        plan_step = state['plan'].steps[step]
+        return AgentAction(tool=plan_step.tool, tool_input=plan_step.tool_input, log="")
+
+    
     def build_workflow(self) -> StateGraph:
-        """Builds the plan-reflect-execute workflow using ToolNode."""
+        """Builds the plan-reflect-execute workflow."""
         graph = StateGraph(AgentLoopState)
         
-        # The new ToolNode takes a list of tools and handles execution
         tool_node = ToolNode(self.tools)
         
         graph.add_node("plan_step", self.plan_step)
-        graph.add_node("tool_node", tool_node) # Use "tool_node"
+        # The new get_current_task node prepares the input for the tool_node
+        graph.add_node("get_task", self._get_current_task)
+        graph.add_node("tool_node", tool_node)
         graph.add_node("reflection_step", self.reflection_step)
         graph.add_node("summarize_step", self.summarize_step)
         graph.add_node("save_memory_step", self.save_memory_step)
 
         graph.set_entry_point("plan_step")
         
-        # Correct the flow: plan -> tool_node -> reflect
-        graph.add_edge("plan_step", "tool_node")
+        # The flow now goes through get_task before tool_node
+        graph.add_edge("plan_step", "get_task")
+        graph.add_edge("get_task", "tool_node")
         graph.add_edge("tool_node", "reflection_step")
         
         graph.add_conditional_edges(
             "reflection_step",
             self.should_continue_planned_workflow,
-            {
-                "continue": "tool_node", # Loop back to the tool_node for the next step
-                "end": "summarize_step"
-            }
+            {"continue": "get_task", "end": "summarize_step"} # Loop back to get the next task
         )
         
         graph.add_edge("summarize_step", "save_memory_step")
         graph.add_edge("save_memory_step", END)
         
         return graph
+
     def should_continue_planned_workflow(self, state: AgentLoopState) -> str:
         """Determines if the planned execution should continue."""
         if state.get("error"):
