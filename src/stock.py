@@ -1,10 +1,3 @@
-"""
-stock.py: Stock analysis agent workflow using LangGraph.
-
-Fetches stock news from Yahoo Finance, analyzes it, and suggests trading ideas.
-LangGraph coordinates agents; Streamlit provides the interface.
-"""
-
 from typing import List, Dict, Union
 from langchain_community.tools.yahoo_finance_news import YahooFinanceNewsTool
 from langchain.schema import Document

@@ -1,5 +1,3 @@
-# src/main_app.py
-
 import os
 from typing import List
 import logging
