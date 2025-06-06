@@ -14,7 +14,7 @@ from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_community.vectorstores import Chroma
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.tools import Tool
-from langgraph.prebuilt.tool_executor import ToolExecutor
+from langgraph.prebuilt import ToolExecutor
 from langgraph.graph import StateGraph, END
 
 from pydantic import BaseModel, Field
