@@ -70,29 +70,40 @@ def test_ingest_direct_documents(rag_engine, mock_embedding):
     assert any("LangGraph" in doc.page_content for doc in res.get("documents", []))
 
 
+# In tests/test_core_rag_engine.py
+
 def test_rag_direct_answer(populated_rag_engine, mocker):
-    """Tests the full RAG workflow, mocking all sub-chains."""
+    """Tests the full RAG workflow by mocking all sub-chains."""
     engine, collection = populated_rag_engine
-    mocker.patch.object(engine.query_analyzer_chain, 'invoke', return_value={})
-    mocker.patch.object(engine.query_rewriter_chain, 'invoke', return_value={'text': 'What is the capital of France?'})
-    mocker.patch.object(engine.answer_generation_chain, 'invoke', return_value={'text': 'The answer is Paris.'})
-    mocker.patch.object(engine, '_grounding_check_node', return_value={"regeneration_feedback": None})
     
+    # Replace entire chain objects with Mocks
+    mocker.patch.object(engine, 'query_analyzer_chain', Mock(invoke=Mock(return_value={})))
+    mocker.patch.object(engine, 'query_rewriter_chain', Mock(invoke=Mock(return_value={'text': 'What is the capital of France?'})))
+    mocker.patch.object(engine, 'answer_generation_chain', Mock(invoke=Mock(return_value={'text': 'The answer is Paris.'})))
+    mocker.patch.object(engine, '_grounding_check_node', Mock(return_value={"regeneration_feedback": None}))
+
     res = engine.run_full_rag_workflow("What is the capital of France?", collection_name=collection)
     assert "Paris" in res["answer"]
+
 
 def test_rag_web_search_fallback(rag_engine, mocker):
     """Tests that the engine falls back to web search."""
     engine = rag_engine
     engine.tavily_api_key = "fake_key"
     
+    # Mock nodes and tools to force the web search path
     mocker.patch.object(engine, '_retrieve_node', return_value={"documents": []})
     mocker.patch.object(engine, '_grade_documents_node', return_value={"relevance_check_passed": False})
-    mocker.patch.object(engine.search_tool, 'invoke', return_value=[{"content": "AlphaFold3 is an AI model."}])
-    mocker.patch.object(engine.answer_generation_chain, 'invoke', return_value={'text': 'Web result: AlphaFold3 is an AI model.'})
     
-    res = engine.run_full_rag_workflow("What is AlphaFold 3?")
-    assert "AlphaFold3" in res["answer"]
+    # Replace the search_tool object with a Mock
+    mock_search_tool = Mock()
+    mock_search_tool.invoke.return_value = [{"content": "Web search result."}]
+    mocker.patch.object(engine, 'search_tool', mock_search_tool)
+    
+    mocker.patch.object(engine, 'answer_generation_chain', Mock(invoke=Mock(return_value={'text': 'Web search result.'})))
+    
+    res = engine.run_full_rag_workflow("Query requires web search")
+    assert "Web search result" in res["answer"]
 
 def test_grounding_check_node_on_failure(rag_engine, mocker):
     """
