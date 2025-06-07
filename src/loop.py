@@ -342,41 +342,60 @@ class AgentLoopWorkflow:
             state["error"] = f"Failed to generate a plan: {e}"
         return state
     
-    def _get_current_task(self, state: AgentLoopState):
-        """Helper to get the current agent action from the plan."""
-        step = state['current_step'] - 1
-        plan_step = state['plan'].steps[step]
-        return AgentAction(tool=plan_step.tool, tool_input=plan_step.tool_input, log="")
+    def execute_tool_step(self, state: AgentLoopState) -> dict:
+    """Executes the tool for the current plan step and returns the output."""
+    plan_step = state["plan"].steps[state["current_step"] - 1]
+    tool_name = plan_step.tool
+    tool_input = plan_step.tool_input
+
+    tool_map = {tool.name: tool for tool in self.tools}
+    if tool_name in tool_map:
+        try:
+            tool_result = tool_map[tool_name].invoke(tool_input)
+            return {
+                "past_steps": [(tool_name, str(tool_result))],
+                "error": None,
+            }
+        except Exception as e:
+            return {
+                "past_steps": [(tool_name, f"Error: {e}")],
+                "error": str(e),
+            }
+    else:
+        return {
+            "past_steps": [(tool_name, "Error: Tool not found.")],
+            "error": f"Tool '{tool_name}' not found.",
+        }
 
     
     def build_workflow(self) -> StateGraph:
-        """Builds the plan-reflect-execute workflow."""
-        graph = StateGraph(AgentLoopState)
-        tool_node = ToolNode(self.tools)
+    """Builds the plan-reflect-execute workflow."""
+    graph = StateGraph(AgentLoopState)
 
-        graph.add_node("plan_step", self.plan_step)
-        graph.add_node("get_task", self._get_current_task) # New node
-        graph.add_node("tool_node", tool_node)
-        graph.add_node("reflection_step", self.reflection_step)
-        graph.add_node("summarize_step", self.summarize_step)
-        graph.add_node("save_memory_step", self.save_memory_step)
+    graph.add_node("plan_step", self.plan_step)
+    graph.add_node("execute_tool_step", self.execute_tool_step)
+    graph.add_node("reflection_step", self.reflection_step)
+    graph.add_node("summarize_step", self.summarize_step)
+    graph.add_node("save_memory_step", self.save_memory_step)
 
-        graph.set_entry_point("plan_step")
+    graph.set_entry_point("plan_step")
 
-        # Corrected Flow: plan -> get_task -> tool_node -> reflect
-        graph.add_edge("plan_step", "get_task")
-        graph.add_edge("get_task", "tool_node")
-        graph.add_edge("tool_node", "reflection_step")
+    graph.add_edge("plan_step", "execute_tool_step")
+    graph.add_edge("execute_tool_step", "reflection_step")
 
-        graph.add_conditional_edges(
-            "reflection_step",
-            self.should_continue_planned_workflow,
-            {"continue": "get_task", "end": "summarize_step"}
-        )
-        graph.add_edge("summarize_step", "save_memory_step")
-        graph.add_edge("save_memory_step", END)
-        return graph
-    
+    graph.add_conditional_edges(
+        "reflection_step",
+        self.should_continue_planned_workflow,
+        {
+            "continue": "execute_tool_step",
+            "end": "summarize_step"
+        },
+    )
+    graph.add_edge("summarize_step", "save_memory_step")
+    graph.add_edge("save_memory_step", END)
+
+    return graph.compile()
+
     def _get_current_task(self, state: AgentLoopState) -> dict:
         """Helper to get the current agent action from the plan."""
         step = state['current_step'] - 1
