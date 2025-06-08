@@ -369,32 +369,32 @@ class AgentLoopWorkflow:
 
     
     def build_workflow(self) -> StateGraph:
-    """Builds the plan-reflect-execute workflow."""
-    graph = StateGraph(AgentLoopState)
-
-    graph.add_node("plan_step", self.plan_step)
-    graph.add_node("execute_tool_step", self.execute_tool_step)
-    graph.add_node("reflection_step", self.reflection_step)
-    graph.add_node("summarize_step", self.summarize_step)
-    graph.add_node("save_memory_step", self.save_memory_step)
-
-    graph.set_entry_point("plan_step")
-
-    graph.add_edge("plan_step", "execute_tool_step")
-    graph.add_edge("execute_tool_step", "reflection_step")
-
-    graph.add_conditional_edges(
-        "reflection_step",
-        self.should_continue_planned_workflow,
-        {
-            "continue": "execute_tool_step",
-            "end": "summarize_step"
-        },
-    )
-    graph.add_edge("summarize_step", "save_memory_step")
-    graph.add_edge("save_memory_step", END)
-
-    return graph.compile()
+        """Builds the plan-reflect-execute workflow."""
+        graph = StateGraph(AgentLoopState)
+    
+        graph.add_node("plan_step", self.plan_step)
+        graph.add_node("execute_tool_step", self.execute_tool_step)
+        graph.add_node("reflection_step", self.reflection_step)
+        graph.add_node("summarize_step", self.summarize_step)
+        graph.add_node("save_memory_step", self.save_memory_step)
+    
+        graph.set_entry_point("plan_step")
+    
+        graph.add_edge("plan_step", "execute_tool_step")
+        graph.add_edge("execute_tool_step", "reflection_step")
+    
+        graph.add_conditional_edges(
+            "reflection_step",
+            self.should_continue_planned_workflow,
+            {
+                "continue": "execute_tool_step",
+                "end": "summarize_step"
+            },
+        )
+        graph.add_edge("summarize_step", "save_memory_step")
+        graph.add_edge("save_memory_step", END)
+    
+        return graph.compile()
 
     def _get_current_task(self, state: AgentLoopState) -> dict:
         """Helper to get the current agent action from the plan."""
