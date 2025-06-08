@@ -343,29 +343,29 @@ class AgentLoopWorkflow:
         return state
     
     def execute_tool_step(self, state: AgentLoopState) -> dict:
-    """Executes the tool for the current plan step and returns the output."""
-    plan_step = state["plan"].steps[state["current_step"] - 1]
-    tool_name = plan_step.tool
-    tool_input = plan_step.tool_input
-
-    tool_map = {tool.name: tool for tool in self.tools}
-    if tool_name in tool_map:
-        try:
-            tool_result = tool_map[tool_name].invoke(tool_input)
+        """Executes the tool for the current plan step and returns the output."""
+        plan_step = state["plan"].steps[state["current_step"] - 1]
+        tool_name = plan_step.tool
+        tool_input = plan_step.tool_input
+    
+        tool_map = {tool.name: tool for tool in self.tools}
+        if tool_name in tool_map:
+            try:
+                tool_result = tool_map[tool_name].invoke(tool_input)
+                return {
+                    "past_steps": [(tool_name, str(tool_result))],
+                    "error": None,
+                }
+            except Exception as e:
+                return {
+                    "past_steps": [(tool_name, f"Error: {e}")],
+                    "error": str(e),
+                }
+        else:
             return {
-                "past_steps": [(tool_name, str(tool_result))],
-                "error": None,
+                "past_steps": [(tool_name, "Error: Tool not found.")],
+                "error": f"Tool '{tool_name}' not found.",
             }
-        except Exception as e:
-            return {
-                "past_steps": [(tool_name, f"Error: {e}")],
-                "error": str(e),
-            }
-    else:
-        return {
-            "past_steps": [(tool_name, "Error: Tool not found.")],
-            "error": f"Tool '{tool_name}' not found.",
-        }
 
     
     def build_workflow(self) -> StateGraph:
