@@ -24,7 +24,8 @@ from src.stock import fetch_stock_news_documents
 from src.scraper import scrape_urls_as_documents
 from src.config import settings as app_settings
 
-
+from typing import List, Optional, Dict, Any, TypedDict, Union, Annotated
+from langgraph.graph.message import add_messages
 
 class PlanStep(BaseModel):
     """A single step in the execution plan."""
@@ -39,6 +40,7 @@ class Plan(BaseModel):
 class AgentLoopState(TypedDict):
     """
     State dictionary for the plan-and-execute agent loop with memory.
+    'messages' is annotated to automatically append new messages.
     """
     input: str
     plan: Plan
@@ -48,7 +50,8 @@ class AgentLoopState(TypedDict):
     final_summary: str
     retrieved_memories: Optional[str]
     error: Optional[str]
-
+    # The 'messages' key is essential for ToolNode to work correctly.
+    messages: Annotated[list, add_messages]
 
 class AgentLoopWorkflow:
     def __init__(
