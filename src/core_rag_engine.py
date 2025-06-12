@@ -1090,45 +1090,48 @@ class CoreRAGEngine:
         recreate_collection: bool = False,
         direct_documents: Optional[List[Document]] = None
     ) -> None:
-        name = collection_name or self.default_collection_name
-        self.logger.info(f"Starting ingestion for collection '{name}'. Recreate: {recreate_collection}")
+        try:
+            name = collection_name or self.default_collection_name
+            self.logger.info(f"Starting ingestion for collection '{name}'. Recreate: {recreate_collection}")
 
-        all_chunks_for_collection: List[Document] = []
+            all_chunks_for_collection: List[Document] = []
 
-        if direct_documents is not None and isinstance(direct_documents, list) and direct_documents:
-            if all(isinstance(doc, Document) for doc in direct_documents):
-                self.logger.info(f"Using {len(direct_documents)} preloaded documents for ingestion.")
-                all_chunks_for_collection = self.split_documents(direct_documents)
-            else:
-                self.logger.error("`direct_documents` provided but some items are not Document instances.")
-        elif sources is not None:
-            self.logger.info("Processing documents from `sources` parameter.")
-            if not isinstance(sources, list):
-                sources = [sources]
-            for src in sources:
-                src_type = src.get("type")
-                src_val  = src.get("value")
-                if not src_type or src_val is None:
-                    self.logger.warning(f"Skipping invalid source: {src}")
-                    continue
-                raw_docs = self.load_documents(source_type=src_type, source_value=src_val)
-                if raw_docs:
-                    chunks = self.split_documents(raw_docs)
-                    all_chunks_for_collection.extend(chunks)
+            if direct_documents is not None and isinstance(direct_documents, list) and direct_documents:
+                if all(isinstance(doc, Document) for doc in direct_documents):
+                    self.logger.info(f"Using {len(direct_documents)} preloaded documents for ingestion.")
+                    all_chunks_for_collection = self.split_documents(direct_documents)
+                else:
+                    self.logger.error("`direct_documents` provided but some items are not Document instances.")
+            elif sources is not None:
+                self.logger.info("Processing documents from `sources` parameter.")
+                if not isinstance(sources, list):
+                    sources = [sources]
+                for src in sources:
+                    src_type = src.get("type")
+                    src_val  = src.get("value")
+                    if not src_type or src_val is None:
+                        self.logger.warning(f"Skipping invalid source: {src}")
+                        continue
+                    raw_docs = self.load_documents(source_type=src_type, source_value=src_val)
+                    if raw_docs:
+                        chunks = self.split_documents(raw_docs)
+                        all_chunks_for_collection.extend(chunks)
 
-        if not all_chunks_for_collection:
-            if recreate_collection:
-                self.logger.info(f"No docs but recreate_collection=True. Clearing '{name}'.")
-                self._init_or_load_vectorstore(name, recreate=True)
-            else:
-                self.logger.warning(f"No documents to ingest for '{name}'. Skipping.")
-            return
+            if not all_chunks_for_collection:
+                if recreate_collection:
+                    self.logger.info(f"No docs but recreate_collection=True. Clearing '{name}'.")
+                    self._init_or_load_vectorstore(name, recreate=True)
+                else:
+                    self.logger.warning(f"No documents to ingest for '{name}'. Skipping.")
+                return
 
-        self.index_documents(
-            docs=all_chunks_for_collection,
-            name=name,
-            recreate=recreate_collection
-        )
+            self.index_documents(
+                docs=all_chunks_for_collection,
+                name=name,
+                recreate=recreate_collection
+            )
+        except Exception as e:
+            self.logger.error(f"Ingestion failed for collection '{name}': {e}", exc_info=True)
 
     # ---------------------
     # Public API: Legacy Query
