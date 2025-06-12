@@ -34,8 +34,13 @@ def test_agent_plan_and_execute_workflow(core_engine_for_agent, mocker):
     """
 
     mock_plan = Plan(steps=[
-        PlanStep(tool="FetchStockNews", tool_input={}, reasoning="..."),
-        PlanStep(tool="InsightEngineIngest", tool_input={}, reasoning="...")])
+        PlanStep(tool="FetchStockNews",
+                 tool_input={"tickers_input": "GOOG", "max_articles_per_ticker": 1},
+                 reasoning="..."),
+        PlanStep(tool="InsightEngineIngest",
+                 tool_input={"direct_documents": [], "collection_name": "agent_test_collection"},
+                 reasoning="...")
+        ])
     
     mock_planner_chain = Mock()
     mock_planner_chain.invoke.return_value = mock_plan
