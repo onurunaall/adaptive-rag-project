@@ -2,6 +2,7 @@ import os
 from typing import List
 import logging
 import streamlit as st
+import json
 
 from langchain.agents import AgentFinish, AgentAction
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
@@ -271,8 +272,9 @@ if st.button("Execute Agent Task"):
                             st.markdown(f"**Step {i}:**")
                             if hasattr(action, "tool") and hasattr(action, "tool_input"):
                                 st.markdown(f"Tool: `{action.tool}`")
-                                st.code(str(action.tool_input), language="json")
-                            st.text(f"Output: {obs}")
+                                st.code(json.dumps(action.tool_input, indent=2), language="json") 
+                            st.markdown("**Output:**")
+                            st.write(obs)
                             st.markdown("---")
                 else:
                     st.info("No intermediate tool calls were logged.")
