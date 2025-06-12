@@ -75,7 +75,7 @@ def test_rag_direct_answer(populated_rag_engine, mocker):
     engine, collection = populated_rag_engine
     mocker.patch.object(engine.query_analyzer_chain, '__call__', return_value={})
     mocker.patch.object(engine.query_rewriter_chain, '__call__', return_value={'text': 'What is the capital of France?'})
-    mocker.patch.object(engine.answer_generation_chain, '__call__', return_value={'text': 'The answer is Paris.'})
+    mocker.patch.object(engine.answer_generation_chain, '__call__', return_value={'text': 'The answer is Paris.'})
     mocker.patch.object(engine, '_grounding_check_node', return_value={"regeneration_feedback": None})
     
     res = engine.run_full_rag_workflow("What is the capital of France?", collection_name=collection)
