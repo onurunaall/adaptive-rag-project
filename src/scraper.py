@@ -36,7 +36,7 @@ def scrape_urls_as_documents(urls: List[str], user_goal_for_scraping: Optional[s
             all_docs.append(doc)
 
     except Exception as e:
-        print(f"Error scraping URLs {urls}: {e}")
+        logging.error(f"Error scraping URLs {urls}: {e}", exc_info=True)
         return []
 
     return all_docs
