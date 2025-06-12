@@ -578,7 +578,7 @@ class CoreRAGEngine:
             return {**state, "regeneration_feedback": None, "grounding_check_attempts": current_attempts}
 
         try:
-            result: GroundingCheck = self.grounding_check_chain.invoke({
+            result: GroundingCheck = self.grounding_check_chain({
                 "context": context,
                 "generation": generation
             })
