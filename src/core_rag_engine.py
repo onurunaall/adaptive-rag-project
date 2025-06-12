@@ -726,7 +726,7 @@ class CoreRAGEngine:
         docs_with_scores = []
         for doc in docs:
             try:
-                score_result: RerankScore = self.document_reranker_chain.invoke({
+                score_result: RerankScore = self.document_reranker_chain({
                     "question": question,
                     "document_content": doc.page_content
                 })
@@ -761,7 +761,7 @@ class CoreRAGEngine:
             src = doc.metadata.get("source", "unknown")
             self.logger.debug(f"Grading doc {idx+1}/{len(docs)} from source '{src}'")
             try:
-                grade: RelevanceGrade = self.document_relevance_grader_chain.invoke({
+                grade: RelevanceGrade = self.document_relevance_grader_chain({
                     "question": question,
                     "document_content": doc.page_content
                 })
@@ -805,7 +805,7 @@ class CoreRAGEngine:
             formatted_history_str = "No chat history."
 
         try:
-            analysis_result: QueryAnalysis = self.query_analyzer_chain.invoke({
+            analysis_result: QueryAnalysis = self.query_analyzer_chain({
                 "question": question,
                 "chat_history_formatted": formatted_history_str
             })
@@ -828,7 +828,7 @@ class CoreRAGEngine:
         self.logger.info("NODE: Rewriting query")
         original_question = state.get("original_question") or state["question"]
         try:
-            result = self.query_rewriter_chain.invoke({
+            result = self.query_rewriter_chain({
                 "question": original_question,
                 "chat_history": state.get("chat_history", [])
             })
@@ -865,7 +865,7 @@ class CoreRAGEngine:
 
         try:
             self.logger.debug(f"Invoking web search for: '{current_question}'")
-            raw_results = self.search_tool.invoke({"query": current_question})
+            raw_results = self.search_tool.run({"query": current_question})
 
             processed_web_docs: List[Document] = []
             if isinstance(raw_results, list):
@@ -939,7 +939,7 @@ class CoreRAGEngine:
             input_data_for_chain["regeneration_feedback_if_any"] = regeneration_feedback + "\n\nOriginal Question: "
 
         try:
-            result_dict = self.answer_generation_chain.invoke(input_data_for_chain) 
+            result_dict = self.answer_generation_chain(input_data_for_chain) 
             generated_text = result_dict.get("text", "")
             state["generation"] = generated_text.strip()
         except Exception as e:
