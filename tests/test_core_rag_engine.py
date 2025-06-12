@@ -70,40 +70,32 @@ def test_ingest_direct_documents(rag_engine, mock_embedding):
     assert any("LangGraph" in doc.page_content for doc in res.get("documents", []))
 
 
-# In tests/test_core_rag_engine.py
-
 def test_rag_direct_answer(populated_rag_engine, mocker):
-    """Tests the full RAG workflow by mocking all sub-chains."""
+    """Tests the full RAG workflow, mocking all sub-chains."""
     engine, collection = populated_rag_engine
+    mocker.patch.object(engine.query_analyzer_chain, 'invoke', return_value={})
+    mocker.patch.object(engine.query_rewriter_chain, 'invoke', return_value={'text': 'What is the capital of France?'})
+    mocker.patch.object(engine.answer_generation_chain, 'invoke', return_value={'text': 'The answer is Paris.'})
+    mocker.patch.object(engine, '_grounding_check_node', return_value={"regeneration_feedback": None})
     
-    # Replace entire chain objects with Mocks
-    mocker.patch.object(engine, 'query_analyzer_chain', Mock(invoke=Mock(return_value={})))
-    mocker.patch.object(engine, 'query_rewriter_chain', Mock(invoke=Mock(return_value={'text': 'What is the capital of France?'})))
-    mocker.patch.object(engine, 'answer_generation_chain', Mock(invoke=Mock(return_value={'text': 'The answer is Paris.'})))
-    mocker.patch.object(engine, '_grounding_check_node', Mock(return_value={"regeneration_feedback": None}))
-
     res = engine.run_full_rag_workflow("What is the capital of France?", collection_name=collection)
     assert "Paris" in res["answer"]
-
 
 def test_rag_web_search_fallback(rag_engine, mocker):
     """Tests that the engine falls back to web search."""
     engine = rag_engine
     engine.tavily_api_key = "fake_key"
     
-    # Mock nodes and tools to force the web search path
     mocker.patch.object(engine, '_retrieve_node', return_value={"documents": []})
     mocker.patch.object(engine, '_grade_documents_node', return_value={"relevance_check_passed": False})
-    
-    # Replace the search_tool object with a Mock
-    mock_search_tool = Mock()
-    mock_search_tool.invoke.return_value = [{"content": "Web search result."}]
-    mocker.patch.object(engine, 'search_tool', mock_search_tool)
-    
-    mocker.patch.object(engine, 'answer_generation_chain', Mock(invoke=Mock(return_value={'text': 'Web search result.'})))
-    
-    res = engine.run_full_rag_workflow("Query requires web search")
-    assert "Web search result" in res["answer"]
+    mocker.patch.object(engine.search_tool, 'invoke', return_value=[{"content": "AlphaFold3 is an AI model."}])
+    mocker.patch.object(engine.answer_generation_chain, 'invoke', return_value={'text': 'Web result: AlphaFold3 is an AI model.'})
+    mocker.patch.object(engine.query_rewriter_chain, 'invoke', return_value={'text': 'What is AlphaFold 3?'})
+
+    mocker.patch.object(engine.search_tool, 'invoke', return_value=[{"content": "AlphaFold3 is an AI model."}])
+    mocker.patch.object(engine.answer_generation_chain, 'invoke', return_value={'text': 'Web result: AlphaFold3 is an AI model.'})
+    res = engine.run_full_rag_workflow("What is AlphaFold 3?")
+    assert "AlphaFold3" in res["answer"]
 
 def test_grounding_check_node_on_failure(rag_engine, mocker):
     """
@@ -186,6 +178,31 @@ def test_route_after_grounding_check(rag_engine):
     rag_engine.max_grounding_attempts = 2
     assert rag_engine._route_after_grounding_check(state_max_attempts) == END
 
+def test_grade_documents_node_handles_parsing_error(rag_engine, mocker):
+    """
+    Tests that _grade_documents_node continues gracefully if the grader chain
+    fails with a parsing or execution error.
+    """
+    # 1. Mock the invoke method on the chain object to raise an error
+    mocker.patch.object(
+        rag_engine.document_relevance_grader_chain, 
+        'invoke', 
+        side_effect=Exception("LLM or parsing failed")
+    )
+    
+    # 2. Define initial state
+    state = {
+        "question": "AI?",
+        "documents": [Document(page_content="Some content.")],
+    }
+
+    # 3. Execute the node
+    result = rag_engine._grade_documents_node(state)
+
+    # 4. Assert that the node handled the error and set a definitive state
+    #    In this case, no documents should be considered relevant.
+    assert result["relevance_check_passed"] is False
+    assert len(result["documents"]) == 0
 
 def test_rerank_documents_node_sorts_correctly(rag_engine, mocker):
     """Tests that the rerank node sorts documents by score."""
