@@ -28,16 +28,14 @@ def fetch_stock_news_documents(tickers_input: Union[str, List[str]], max_article
     tool = YahooFinanceNewsTool(top_n=max_articles_per_ticker)
 
     try:
-        # The tool expects a single string of comma-separated tickers.
-        # It returns a list of dictionaries, or a string indicating no articles.
         results = tool.run(tickers_str)
     except Exception as e:
-        print(f"Error fetching news for {tickers_str}: {e}")
+        logging.error(f"Error fetching news for {tickers_str}: {e}", exc_info=True)
         return []
 
     documents = []
     if isinstance(results, str) and "Cannot find any article" in results:
-        print(f"No articles found for tickers: {tickers_str}")
+        logging.warning(f"No articles found for tickers: {tickers_str}")
         return []
 
     if isinstance(results, list):
