@@ -223,27 +223,50 @@ class AgentLoopWorkflow:
 
     def reflection_step(self, state: AgentLoopState) -> AgentLoopState:
         """Reflects on the last executed step and adds to the scratchpad."""
-        self.logger.info("REFLECTING on last step...")
-        reflection_chain = self._create_reflection_chain()
-
-        # Get the last executed step details
-        step_index = state["current_step"] - 1 # execute_step increments it
-        plan_step = state["plan"].steps[step_index - 1]
-        action, observation = state["past_steps"][-1]
-
+        self.logger.info("REFLECTING on last step and updating state...")
+        
+        if len(state.get('messages', [])) < 2:
+            self.logger.error("Not enough messages to reflect on.")
+            state.setdefault("scratchpad", []).append("Reflection skipped: not enough messages.")
+            state['current_step'] += 1
+            return state
+    
+        # Get the result from the tool_node (the last message is a ToolMessage)
+        observation = state['messages'][-1].content
+        
+        # Get the action that was just executed (the message before the last one)
+        action = state['messages'][-2]
+        
+        # Update past_steps for logging and summarization
+        state.setdefault('past_steps', []).append((action, observation))
+        
+        # Get the original reasoning from the plan for this step
+        step_index = state["current_step"] - 1
+        plan_steps = getattr(state.get("plan"), "steps", None)
+        if not plan_steps or not isinstance(plan_steps, list) or step_index >= len(plan_steps):
+            self.logger.error("Invalid step index or missing plan steps for reflection.")
+            state.setdefault("scratchpad", []).append("Reflection skipped: invalid step index or plan.")
+            state['current_step'] += 1
+            return state
+        
+        plan_step = plan_steps[step_index]
+        
         try:
+            reflection_chain = self._create_reflection_chain()
             reflection = reflection_chain.invoke({
                 "goal": state["input"],
                 "step_reasoning": plan_step.reasoning,
                 "tool_name": plan_step.tool,
                 "observation": observation,
             })
+            
             state.setdefault("scratchpad", []).append(reflection)
             self.logger.info(f"REFLECTION: '{reflection}'")
         except Exception as e:
             self.logger.error(f"Reflection failed: {e}", exc_info=True)
-            state.setdefault("scratchpad", []).append(f"Error reflecting on step {step_index}: {e}")
-
+            state.setdefault("scratchpad", []).append(f"Error reflecting on step {state['current_step']}: {e}")
+        
+        state['current_step'] += 1
         return state
 
     def _create_summary_chain(self) -> LLMChain:
@@ -342,81 +365,72 @@ class AgentLoopWorkflow:
             state["error"] = f"Failed to generate a plan: {e}"
         return state
     
-    def execute_tool_step(self, state: AgentLoopState) -> dict:
-        """Executes the tool for the current plan step and returns the output."""
-        plan_step = state["plan"].steps[state["current_step"] - 1]
-        tool_name = plan_step.tool
-        tool_input = plan_step.tool_input
-    
-        tool_map = {tool.name: tool for tool in self.tools}
-        if tool_name in tool_map:
-            try:
-                tool_result = tool_map[tool_name].invoke(tool_input)
-                return {
-                    "past_steps": [(tool_name, str(tool_result))],
-                    "error": None,
-                }
-            except Exception as e:
-                return {
-                    "past_steps": [(tool_name, f"Error: {e}")],
-                    "error": str(e),
-                }
-        else:
-            return {
-                "past_steps": [(tool_name, "Error: Tool not found.")],
-                "error": f"Tool '{tool_name}' not found.",
-            }
-
-    
     def build_workflow(self) -> StateGraph:
         """Builds the plan-reflect-execute workflow."""
         graph = StateGraph(AgentLoopState)
-    
+        tool_node = ToolNode(self.tools)
+
         graph.add_node("plan_step", self.plan_step)
-        graph.add_node("execute_tool_step", self.execute_tool_step)
+        graph.add_node("get_task", self._get_current_task) # New node
+        graph.add_node("tool_node", tool_node)
         graph.add_node("reflection_step", self.reflection_step)
         graph.add_node("summarize_step", self.summarize_step)
         graph.add_node("save_memory_step", self.save_memory_step)
-    
+
         graph.set_entry_point("plan_step")
-    
-        graph.add_edge("plan_step", "execute_tool_step")
-        graph.add_edge("execute_tool_step", "reflection_step")
-    
+
+        # Corrected Flow: plan -> get_task -> tool_node -> reflect
+        graph.add_edge("plan_step", "get_task")
+        graph.add_edge("get_task", "tool_node")
+        graph.add_edge("tool_node", "reflection_step")
+
         graph.add_conditional_edges(
             "reflection_step",
             self.should_continue_planned_workflow,
-            {
-                "continue": "execute_tool_step",
-                "end": "summarize_step"
-            },
+            {"continue": "get_task", "end": "summarize_step"}
         )
         graph.add_edge("summarize_step", "save_memory_step")
         graph.add_edge("save_memory_step", END)
+        return graph
     
-        return graph.compile()
-
     def _get_current_task(self, state: AgentLoopState) -> dict:
         """Helper to get the current agent action from the plan."""
-        step = state['current_step'] - 1
-        if step < 0 or step >= len(state.get("plan").steps):
+        # Ensure the plan exists before trying to access it
+        if "plan" not in state or not state["plan"] or not getattr(state["plan"], "steps", None):
+            state["error"] = "Cannot get current task: Plan is missing or empty."
             return END
-        plan_step = state["plan"].steps[step]
+
+        step = state["current_step"] - 1
+        plan_steps = state["plan"].steps
+
+        if step < 0 or step >= len(plan_steps):
+            return END
+
+        plan_step = plan_steps[step]
         action = AgentAction(tool=plan_step.tool, tool_input=plan_step.tool_input, log="")
         return {"messages": [action]}
+
 
     def should_continue_planned_workflow(self, state: AgentLoopState) -> str:
         """Determines if the planned execution should continue."""
         if state.get("error"):
             self.logger.error(f"Workflow ending due to error: {state['error']}")
-            return END
+            return "end"
         
-        # The 'current_step' has been incremented by execute_step already
-        last_step_executed = state["current_step"] - 1
-        if last_step_executed >= len(state["plan"].steps):
+        # The 'current_step' has been incremented and now points to the *next* step number (1-based).
+        # We get the index for the next step.
+        next_step_index = state["current_step"] - 1
+        
+        plan_steps = getattr(state.get("plan"), "steps", None)
+        if not plan_steps or not isinstance(plan_steps, list):
+            self.logger.error("Plan steps missing or invalid. Ending workflow.")
+            return "end"
+
+        if next_step_index >= len(plan_steps):
             self.logger.info("Workflow finished: All plan steps executed. Proceeding to summary.")
-            return "end" # Signal to go to summarize_step
-        
+            return "end"
+
+        self.logger.info(f"Workflow continuing to step {state['current_step']}.")
         return "continue"
     
     def run_workflow(self, goal: str) -> AgentLoopState:
