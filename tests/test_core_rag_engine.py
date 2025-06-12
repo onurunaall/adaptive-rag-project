@@ -73,9 +73,9 @@ def test_ingest_direct_documents(rag_engine, mock_embedding):
 def test_rag_direct_answer(populated_rag_engine, mocker):
     """Tests the full RAG workflow, mocking all sub-chains."""
     engine, collection = populated_rag_engine
-    mocker.patch.object(engine.query_analyzer_chain, 'invoke', return_value={})
-    mocker.patch.object(engine.query_rewriter_chain, 'invoke', return_value={'text': 'What is the capital of France?'})
-    mocker.patch.object(engine.answer_generation_chain, 'invoke', return_value={'text': 'The answer is Paris.'})
+    mocker.patch.object(engine.query_analyzer_chain, '__call__', return_value={})
+    mocker.patch.object(engine.query_rewriter_chain, '__call__', return_value={'text': 'What is the capital of France?'})
+    mocker.patch.object(engine.answer_generation_chain, '__call__', return_value={'text': 'The answer is Paris.'})
     mocker.patch.object(engine, '_grounding_check_node', return_value={"regeneration_feedback": None})
     
     res = engine.run_full_rag_workflow("What is the capital of France?", collection_name=collection)
@@ -88,12 +88,9 @@ def test_rag_web_search_fallback(rag_engine, mocker):
     
     mocker.patch.object(engine, '_retrieve_node', return_value={"documents": []})
     mocker.patch.object(engine, '_grade_documents_node', return_value={"relevance_check_passed": False})
-    mocker.patch.object(engine.search_tool, 'invoke', return_value=[{"content": "AlphaFold3 is an AI model."}])
-    mocker.patch.object(engine.answer_generation_chain, 'invoke', return_value={'text': 'Web result: AlphaFold3 is an AI model.'})
-    mocker.patch.object(engine.query_rewriter_chain, 'invoke', return_value={'text': 'What is AlphaFold 3?'})
-
-    mocker.patch.object(engine.search_tool, 'invoke', return_value=[{"content": "AlphaFold3 is an AI model."}])
-    mocker.patch.object(engine.answer_generation_chain, 'invoke', return_value={'text': 'Web result: AlphaFold3 is an AI model.'})
+    mocker.patch.object(engine.query_rewriter_chain, '__call__', return_value={'text': 'What is AlphaFold 3?'})
+    mocker.patch.object(engine.search_tool, 'run', return_value=[{"content": "AlphaFold3 is an AI model."}])
+    mocker.patch.object(engine.answer_generation_chain, '__call__', return_value={'text': 'Web result: AlphaFold3 is an AI model.'})
     res = engine.run_full_rag_workflow("What is AlphaFold 3?")
     assert "AlphaFold3" in res["answer"]
 
@@ -108,7 +105,7 @@ def test_grounding_check_node_on_failure(rag_engine, mocker):
         correction_suggestion="The answer should stick to the context."
     )
     mock_chain = Mock()
-    mock_chain.invoke.return_value = mock_failure_output
+    mock_chain.__call__.return_value = mock_failure_output
 
     mocker.patch.object(rag_engine, 'grounding_check_chain', mock_chain)
 
@@ -186,7 +183,7 @@ def test_grade_documents_node_handles_parsing_error(rag_engine, mocker):
     # 1. Mock the invoke method on the chain object to raise an error
     mocker.patch.object(
         rag_engine.document_relevance_grader_chain, 
-        'invoke', 
+        '__call__', 
         side_effect=Exception("LLM or parsing failed")
     )
     
