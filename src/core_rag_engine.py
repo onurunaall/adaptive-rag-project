@@ -1153,7 +1153,7 @@ class CoreRAGEngine:
         context = "\n\n".join(d.page_content for d in docs)
         prompt = PROMPT_TEMPLATE.format(context=context, question=question)
         try:
-            ans = self.llm.predict(prompt)
+            ans = self.llm.invoke(prompt).content
         except Exception as e:
             self.logger.error(f"LLM error: {e}")
             return {"answer": "Error generating answer.", "sources": []}
