@@ -131,17 +131,14 @@ class AgentLoopWorkflow:
             observation = f"Error: Tool '{tool_name}' not found."
         else:
             try:
-                # Use .run() for legacy compatibility
-                observation = selected_tool.run(tool_input)
+                observation = selected_tool.invoke(tool_input)
             except Exception as e:
                 observation = f"Error executing tool '{tool_name}': {e}"
 
         new_past_step = (AgentAction(tool=tool_name, tool_input=tool_input, log=""), observation)
         
-        return {
-            "past_steps": state["past_steps"] + [new_past_step],
-            "current_step_index": state["current_step_index"] + 1,
-        }
+        return {"past_steps": state["past_steps"] + [new_past_step],
+                "current_step_index": state["current_step_index"] + 1}
 
     def should_continue(self, state: AgentLoopState) -> str:
         if state["current_step_index"] >= len(state["plan"].steps):

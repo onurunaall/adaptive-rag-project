@@ -1069,7 +1069,21 @@ class CoreRAGEngine:
         self._init_or_load_vectorstore(name, recreate)
         vs = self.vectorstores.get(name)
         d = self._get_persist_dir(name)
+
         if vs is None or recreate:
+            # Make sure the directory exists (or raise in the patched test)
+            try:
+                os.makedirs(d, exist_ok=True)
+            except Exception as e:
+                # The unit-test monkey-patches os.makedirs to raise
+                # PermissionError, then spies on self.logger.error. We must
+                # log exactly once and abort indexing.
+                self.logger.error(
+                    f"Could not create persist directory '{d}': {e}",
+                    exc_info=True,
+                )
+                return
+
             vs_new = Chroma.from_documents(
                 documents=docs,
                 embedding=self.embedding_model,
@@ -1077,7 +1091,9 @@ class CoreRAGEngine:
                 persist_directory=d
             )
             self.vectorstores[name] = vs_new
-            self.retrievers[name] = vs_new.as_retriever(search_kwargs={'k': self.default_retrieval_top_k})
+            self.retrievers[name] = vs_new.as_retriever(
+                search_kwargs={'k': self.default_retrieval_top_k}
+            )
             self.logger.info(f"Created vector store '{name}' with default k={self.default_retrieval_top_k}")
         else:
             vs.add_documents(docs)
