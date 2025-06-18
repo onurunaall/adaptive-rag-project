@@ -243,7 +243,7 @@ def test_document_relevance_grader_chain_parsing(monkeypatch, rag_engine):
     assert "relevance_check_passed" in result
     assert result["relevance_check_passed"] is True
     
-def test_document_relevance_grader_chain_bad_json(monkeypatch, rag_engine):
+def test_document_relevance_grader_chain_bad_json(rag_engine, mocker):
     """
     Simulate malformed output (non-JSON) from relevance grader chain and
     verify _grade_documents_node handles it without crashing.
