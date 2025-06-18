@@ -91,7 +91,6 @@ def test_rag_web_search_fallback(rag_engine, mocker):
     engine.tavily_api_key = "fake_key"
 
     mocker.patch.object(engine, '_retrieve_node', return_value={"documents": []})
-<<<<<<< HEAD
     mocker.patch.object(engine, '_grade_documents_node', return_value={"relevance_check_passed": False, "documents": []})
 
     mocker.patch.object(engine.query_rewriter_chain, '__call__', return_value={'text': 'What is AlphaFold 3?'})
@@ -99,15 +98,6 @@ def test_rag_web_search_fallback(rag_engine, mocker):
 
     mocker.patch.object(engine.search_tool, 'run', return_value=[{"content": "AlphaFold3 is an AI model."}])
 
-=======
-    mocker.patch.object(engine, '_grade_documents_node', return_value={"relevance_check_passed": False})
-    mocker.patch.object(engine.search_tool, 'invoke', return_value=[{"content": "AlphaFold3 is an AI model."}])
-    mocker.patch.object(engine.answer_generation_chain, 'invoke', return_value={'text': 'Web result: AlphaFold3 is an AI model.'})
-    mocker.patch.object(engine.query_rewriter_chain, 'invoke', return_value={'text': 'What is AlphaFold 3?'})
-
-    mocker.patch.object(engine.search_tool, 'invoke', return_value=[{"content": "AlphaFold3 is an AI model."}])
-    mocker.patch.object(engine.answer_generation_chain, 'invoke', return_value={'text': 'Web result: AlphaFold3 is an AI model.'})
->>>>>>> b001bed (27)
     res = engine.run_full_rag_workflow("What is AlphaFold 3?")
     assert "AlphaFold3" in res["answer"]
 
@@ -195,29 +185,19 @@ def test_grade_documents_node_handles_parsing_error(rag_engine, mocker):
     Tests that _grade_documents_node continues gracefully if the grader chain
     fails with a parsing or execution error.
     """
-    # 1. Mock the invoke method on the chain object to raise an error
     mocker.patch.object(
         rag_engine.document_relevance_grader_chain, 
         '__call__', 
         side_effect=Exception("LLM or parsing failed")
     )
     
-    # 2. Define initial state
     state = {
         "question": "AI?",
         "documents": [Document(page_content="Some content.")],
     }
 
-<<<<<<< HEAD
     result = rag_engine._grade_documents_node(state)
 
-=======
-    # 3. Execute the node
-    result = rag_engine._grade_documents_node(state)
-
-    # 4. Assert that the node handled the error and set a definitive state
-    #    In this case, no documents should be considered relevant.
->>>>>>> b001bed (27)
     assert result["relevance_check_passed"] is False
     assert len(result["documents"]) == 0
 
