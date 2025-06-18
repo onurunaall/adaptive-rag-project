@@ -3,9 +3,12 @@ import os
 import shutil
 from unittest.mock import Mock
 
+from langchain_core.agents import AgentFinish
+from langgraph.graph import END
+
 from src.core_rag_engine import CoreRAGEngine
 from src.loop import AgentLoopWorkflow, Plan, PlanStep
-from langchain_core.agents import AgentFinish
+
 
 @pytest.fixture(scope="module")
 def core_engine_for_agent():
