@@ -201,37 +201,29 @@ def test_grade_documents_node_handles_parsing_error(rag_engine, mocker):
 
 def test_rerank_documents_node_sorts_correctly(rag_engine, mocker):
     """Tests that the rerank node sorts documents by score."""
-    docs = [Document(page_content="Low"),
-            Document(page_content="High")]
-    
-    mock_scores = [RerankScore(relevance_score=0.1, justification=""),
-                   RerankScore(relevance_score=0.9, justification="")]
-    
-    mocker.patch.object(
-        rag_engine.document_reranker_chain,
-        "__call__",
-        side_effect=mock_scores
-    )
-    
+    docs = [Document(page_content="Low"), Document(page_content="High")]
+    mock_scores = [RerankScore(relevance_score=0.1, justification=""), RerankScore(relevance_score=0.9, justification="")]
+
+    # Unified Pattern: Create a mock, configure it, and patch the whole attribute.
+    mock_chain = Mock()
+    mock_chain.__call__.side_effect = mock_scores
+    mocker.patch.object(rag_engine, 'document_reranker_chain', mock_chain)
+
     result_state = rag_engine._rerank_documents_node({"documents": docs, "question": "test"})
     assert result_state["documents"][0].page_content == "High"
 
 
-def test_document_relevance_grader_chain_parsing(monkeypatch, rag_engine):
+def test_document_relevance_grader_chain_parsing(rag_engine, mocker):
     """
     Simulate correct JSON output from relevance grader chain and ensure
     _grade_documents_node sets 'relevance_check_passed' in the returned state.
     """
     correct_response = RelevanceGrade(is_relevant=True, justification="Matches user question")
-    fake_chain = Mock()
 
-    fake_chain.__call__.return_value = correct_response
-
-    monkeypatch.setattr(
-        rag_engine,
-        "document_relevance_grader_chain",
-        fake_chain
-    )
+    # Unified Pattern: Create a mock, configure it, and patch the whole attribute.
+    mock_chain = Mock()
+    mock_chain.__call__.return_value = correct_response
+    mocker.patch.object(rag_engine, "document_relevance_grader_chain", mock_chain)
 
     state = {
         "question": "What is AI?",
@@ -248,11 +240,10 @@ def test_document_relevance_grader_chain_bad_json(rag_engine, mocker):
     Simulate malformed output (non-JSON) from relevance grader chain and
     verify _grade_documents_node handles it without crashing.
     """
-    mocker.patch.object(
-        rag_engine.document_relevance_grader_chain,
-        "__call__",
-        side_effect=json.JSONDecodeError("Expecting value", "NOT JSON", 0)
-    )
+    # Unified Pattern: Create a mock, configure its side effect, and patch the whole attribute.
+    mock_chain = Mock()
+    mock_chain.__call__.side_effect = json.JSONDecodeError("Expecting value", "NOT JSON", 0)
+    mocker.patch.object(rag_engine, "document_relevance_grader_chain", mock_chain)
 
     state = {
         "question": "AI?",
@@ -261,12 +252,13 @@ def test_document_relevance_grader_chain_bad_json(rag_engine, mocker):
     }
     result = rag_engine._grade_documents_node(state)
 
-    # The node should handle the error and mark relevance as False.
     assert result["relevance_check_passed"] is False
 
 
 def test_query_rewriter_chain_parsing(rag_engine, mocker):
     """Simulates LLM output for query rewriting."""
+
+    # Unified Pattern: Create a mock, configure it, and patch the whole attribute.
     mock_chain = Mock()
     mock_chain.__call__.return_value = {"text": "Rewritten: What is LangGraph?"}
     mocker.patch.object(rag_engine, 'query_rewriter_chain', mock_chain)
