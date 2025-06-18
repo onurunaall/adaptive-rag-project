@@ -4,10 +4,10 @@ import shutil
 from unittest.mock import Mock
 
 from langchain_core.agents import AgentFinish
-from langgraph.graph import END
+from langgraph.graph import StateGraph, END
 
 from src.core_rag_engine import CoreRAGEngine
-from src.loop import AgentLoopWorkflow, Plan, PlanStep
+from src.loop import AgentLoopState, AgentLoopWorkflow, Plan, PlanStep
 
 
 @pytest.fixture(scope="module")
