@@ -195,23 +195,14 @@ def test_grade_documents_node_handles_parsing_error(rag_engine, mocker):
     Tests that _grade_documents_node continues gracefully if the grader chain
     fails with a parsing or execution error.
     """
-<<<<<<< HEAD
+    # 1. Mock the invoke method on the chain object to raise an error
     mocker.patch.object(
         rag_engine.document_relevance_grader_chain, 
         '__call__', 
         side_effect=Exception("LLM or parsing failed")
     )
     
-=======
-    # 1. Mock the invoke method on the chain object to raise an error
-    mocker.patch.object(
-        rag_engine.document_relevance_grader_chain, 
-        'invoke', 
-        side_effect=Exception("LLM or parsing failed")
-    )
-    
     # 2. Define initial state
->>>>>>> b001bed (27)
     state = {
         "question": "AI?",
         "documents": [Document(page_content="Some content.")],
