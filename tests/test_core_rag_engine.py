@@ -7,16 +7,13 @@ from unittest.mock import Mock, patch
 from langgraph.graph import END
 from langchain.schema import Document
 
-from src.core_rag_engine import CoreRAGEngine, GroundingCheck, RerankScore
+from src.core_rag_engine import CoreRAGEngine, GroundingCheck, RerankScore, QueryAnalysis, RelevanceGrade
 
 
 @pytest.fixture
 def mock_embedding(mocker):
     """Fixture to mock the OpenAI embedding function."""
-    return mocker.patch(
-        'langchain_openai.embeddings.base.OpenAIEmbeddings.embed_documents',
-        return_value=[[0.1] * 1536] # Return a fake vector
-    )
+    return mocker.patch('langchain_openai.embeddings.base.OpenAIEmbeddings.embed_documents', return_value=[[0.1] * 1536])
 
 @pytest.fixture(scope="module")
 def populated_rag_engine(rag_engine): # Add 'mocker' if not present, though patch is used here
@@ -24,13 +21,11 @@ def populated_rag_engine(rag_engine): # Add 'mocker' if not present, though patc
     Fixture that ingests two documents into a collection named 'rag_test_data'.
     """
     cname = "rag_test_data"
-    docs = [
-        Document(page_content="Paris is the capital of France. It is known for the Eiffel Tower.", metadata={"source": "france_doc"}),
-        Document(page_content="The OpenAI GPT-4 model is a large language model.", metadata={"source": "openai_doc"})
-    ]
-    # Use patch to mock the embedding call during ingestion
+    docs = [Document(page_content="Paris is the capital of France. It is known for the Eiffel Tower.", metadata={"source": "france_doc"}),
+            Document(page_content="The OpenAI GPT-4 model is a large language model.", metadata={"source": "openai_doc"})]
+    
     with patch('langchain_openai.embeddings.base.OpenAIEmbeddings.embed_documents') as mock_embed:
-        mock_embed.return_value = [[0.1] * 1536, [0.2] * 1536] # Return fake vectors
+        mock_embed.return_value = [[0.1] * 1536, [0.2] * 1536]
         rag_engine.ingest(direct_documents=docs, collection_name=cname, recreate_collection=True)
     return rag_engine, cname
 
@@ -73,7 +68,16 @@ def test_ingest_direct_documents(rag_engine, mock_embedding):
 def test_rag_direct_answer(populated_rag_engine, mocker):
     """Tests the full RAG workflow, mocking all sub-chains."""
     engine, collection = populated_rag_engine
-    mocker.patch.object(engine.query_analyzer_chain, '__call__', return_value={})
+    
+    mock_analysis = QueryAnalysis(
+        query_type="factual_lookup",
+        main_intent="testing",
+        extracted_keywords=[],
+        is_ambiguous=False
+    )
+    
+    mocker.patch.object(engine.query_analyzer_chain, '__call__', return_value=mock_analysis)
+    
     mocker.patch.object(engine.query_rewriter_chain, '__call__', return_value={'text': 'What is the capital of France?'})
     mocker.patch.object(engine.answer_generation_chain, '__call__', return_value={'text': 'The answer is Paris.'})
     mocker.patch.object(engine, '_grounding_check_node', return_value={"regeneration_feedback": None})
@@ -85,12 +89,15 @@ def test_rag_web_search_fallback(rag_engine, mocker):
     """Tests that the engine falls back to web search."""
     engine = rag_engine
     engine.tavily_api_key = "fake_key"
-    
+
     mocker.patch.object(engine, '_retrieve_node', return_value={"documents": []})
-    mocker.patch.object(engine, '_grade_documents_node', return_value={"relevance_check_passed": False})
+    mocker.patch.object(engine, '_grade_documents_node', return_value={"relevance_check_passed": False, "documents": []})
+
     mocker.patch.object(engine.query_rewriter_chain, '__call__', return_value={'text': 'What is AlphaFold 3?'})
-    mocker.patch.object(engine.search_tool, 'run', return_value=[{"content": "AlphaFold3 is an AI model."}])
     mocker.patch.object(engine.answer_generation_chain, '__call__', return_value={'text': 'Web result: AlphaFold3 is an AI model.'})
+
+    mocker.patch.object(engine.search_tool, 'run', return_value=[{"content": "AlphaFold3 is an AI model."}])
+
     res = engine.run_full_rag_workflow("What is AlphaFold 3?")
     assert "AlphaFold3" in res["answer"]
 
@@ -131,19 +138,17 @@ def test_grounding_check_node_on_success(rag_engine, mocker):
     """
     mock_success_output = GroundingCheck(is_grounded=True)
     mock_chain = Mock()
-    mock_chain.invoke.return_value = mock_success_output
+    mock_chain.__call__.return_value = mock_success_output
     mocker.patch.object(rag_engine, 'grounding_check_chain', mock_chain)
-    # 2. Define initial state where generation matches context
+    
     initial_state = {
         "context": "The sky is blue.",
         "generation": "The sky is blue.",
         "grounding_check_attempts": 0,
     }
 
-    # 3. Execute the grounding check node
     result_state = rag_engine._grounding_check_node(initial_state)
 
-    # 4. Verify no feedback and that attempt count incremented
     assert result_state["regeneration_feedback"] is None
     assert result_state["grounding_check_attempts"] == 1
 
@@ -180,35 +185,32 @@ def test_grade_documents_node_handles_parsing_error(rag_engine, mocker):
     Tests that _grade_documents_node continues gracefully if the grader chain
     fails with a parsing or execution error.
     """
-    # 1. Mock the invoke method on the chain object to raise an error
     mocker.patch.object(
         rag_engine.document_relevance_grader_chain, 
         '__call__', 
         side_effect=Exception("LLM or parsing failed")
     )
     
-    # 2. Define initial state
     state = {
         "question": "AI?",
         "documents": [Document(page_content="Some content.")],
     }
 
-    # 3. Execute the node
     result = rag_engine._grade_documents_node(state)
 
-    # 4. Assert that the node handled the error and set a definitive state
-    #    In this case, no documents should be considered relevant.
     assert result["relevance_check_passed"] is False
     assert len(result["documents"]) == 0
 
 def test_rerank_documents_node_sorts_correctly(rag_engine, mocker):
     """Tests that the rerank node sorts documents by score."""
-    docs = [Document(page_content="Low"), Document(page_content="High")]
-    mock_scores = [RerankScore(relevance_score=0.1, justification=""), RerankScore(relevance_score=0.9, justification="")]
+    docs = [Document(page_content="Low"),
+            Document(page_content="High")]
     
-    # Replace the chain with a simple mock
+    mock_scores = [RerankScore(relevance_score=0.1, justification=""),
+                   RerankScore(relevance_score=0.9, justification="")]
+    
     mock_chain = Mock()
-    mock_chain.invoke.side_effect = mock_scores
+    mock_chain.__call__.side_effect = mock_scores
     mocker.patch.object(rag_engine, 'document_reranker_chain', mock_chain)
     
     result_state = rag_engine._rerank_documents_node({"documents": docs, "question": "test"})
@@ -220,14 +222,15 @@ def test_document_relevance_grader_chain_parsing(monkeypatch, rag_engine):
     Simulate correct JSON output from relevance grader chain and ensure
     _grade_documents_node sets 'relevance_check_passed' in the returned state.
     """
-    correct_response = '{"relevant": true, "reason": "Matches user question"}'
+    correct_response = RelevanceGrade(is_relevant=True, justification="Matches user question")
     fake_chain = Mock()
-    fake_chain.run.return_value = correct_response
+
+    fake_chain.__call__.return_value = correct_response
 
     monkeypatch.setattr(
         rag_engine,
-        "_create_document_relevance_grader_chain",
-        lambda: fake_chain
+        "document_relevance_grader_chain",
+        fake_chain
     )
 
     state = {
@@ -238,41 +241,39 @@ def test_document_relevance_grader_chain_parsing(monkeypatch, rag_engine):
     result = rag_engine._grade_documents_node(state)
 
     assert "relevance_check_passed" in result
-
+    assert result["relevance_check_passed"] is True
+    
 def test_document_relevance_grader_chain_bad_json(monkeypatch, rag_engine):
     """
     Simulate malformed output (non-JSON) from relevance grader chain and
     verify _grade_documents_node handles it without crashing.
     """
-    fake_chain = Mock()
-    fake_chain.run.return_value = "NOT JSON"
-
-    monkeypatch.setattr(
-        rag_engine,
-        "_create_document_relevance_grader_chain",
-        lambda: fake_chain
+    mocker.patch.object(
+        rag_engine.document_relevance_grader_chain,
+        "__call__",
+        side_effect=json.JSONDecodeError("Expecting value", "NOT JSON", 0)
     )
 
     state = {
         "question": "AI?",
         "documents": [Document(page_content="No relevance here.", metadata={})],
-            "collection_name": "test"
+        "collection_name": "test"
     }
     result = rag_engine._grade_documents_node(state)
 
-    assert "relevance_check_passed" in result
+    # The node should handle the error and mark relevance as False.
+    assert result["relevance_check_passed"] is False
 
 
 def test_query_rewriter_chain_parsing(rag_engine, mocker):
     """Simulates LLM output for query rewriting."""
     mock_chain = Mock()
-    mock_chain.invoke.return_value = {"text": "Rewritten: What is LangGraph?"}
+    mock_chain.__call__.return_value = {"text": "Rewritten: What is LangGraph?"}
     mocker.patch.object(rag_engine, 'query_rewriter_chain', mock_chain)
 
     state = {"question": "What about LG?", "original_question": "What about LG?"}
     result = rag_engine._rewrite_query_node(state)
     assert result["question"] == "Rewritten: What is LangGraph?"
-
 
 def test_ingest_handles_oserror(monkeypatch, rag_engine, mocker, mock_embedding):
     """Simulates a PermissionError and ensures the error is logged."""
