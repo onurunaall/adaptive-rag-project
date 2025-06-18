@@ -28,7 +28,6 @@ def test_agent_plan_and_execute_workflow(core_engine_for_agent, mocker):
     """
     # 1. Define the plan we want the agent to execute
     mock_plan = Plan(steps=[
-<<<<<<< HEAD
         PlanStep(
             tool="FetchStockNews",
             tool_input={"tickers_input": "GOOG", "max_articles_per_ticker": 1},
@@ -40,15 +39,6 @@ def test_agent_plan_and_execute_workflow(core_engine_for_agent, mocker):
     # Mock the stock tool to return a predictable result
     mock_stock_tool = Mock()
     mock_stock_tool.run.return_value = "Successfully fetched news for GOOG."
-=======
-        PlanStep(tool="FetchStockNews",
-                 tool_input={"tickers_input": "GOOG", "max_articles_per_ticker": 1},
-                 reasoning="..."),
-        PlanStep(tool="InsightEngineIngest",
-                 tool_input={"direct_documents": [], "collection_name": "agent_test_collection"},
-                 reasoning="...")
-        ])
->>>>>>> b001bed (27)
     
     # 3. Create the agent instance
     key = os.getenv("OPENAI_API_KEY", "dummy_key")
