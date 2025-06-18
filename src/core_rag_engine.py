@@ -397,10 +397,12 @@ class CoreRAGEngine:
     # Search Tool
     # ---------------------
     def _init_search_tool(self) -> Optional[TavilySearchResults]:
-        if not self.tavily_api_key:
-            self.logger.warning("TAVILY_API_KEY missing, web search disabled")
-            return None
-        return TavilySearchResults(api_key=self.tavily_api_key)
+        try:
+            from langchain_tavily import TavilySearch
+            return TavilySearch(api_key=self.tavily_api_key, max_results=5)
+        except ImportError:                    # package not installed → fallback
+            from langchain_community.tools.tavily_search import TavilySearchResults
+            return TavilySearchResults(api_key=self.tavily_api_key, max_results=5)
 
     # ---------------------
     # Chain Factories
@@ -565,9 +567,9 @@ class CoreRAGEngine:
 
     def _grounding_check_node(self, state: CoreGraphState) -> CoreGraphState:
         self.logger.info("NODE: Performing grounding check on generated answer...")
-        context    = state.get("context", "")
+        context = state.get("context", "")
         generation = state.get("generation", "")
-        question   = state.get("original_question") or state.get("question", "")
+        question = state.get("original_question") or state.get("question", "")
 
         current_attempts = state.get("grounding_check_attempts", 0) + 1
         state["grounding_check_attempts"] = current_attempts
@@ -578,7 +580,7 @@ class CoreRAGEngine:
             return {**state, "regeneration_feedback": None, "grounding_check_attempts": current_attempts}
 
         try:
-            result: GroundingCheck = self.grounding_check_chain({
+            result: GroundingCheck = self.grounding_check_chain.invoke({
                 "context": context,
                 "generation": generation
             })
@@ -687,7 +689,7 @@ class CoreRAGEngine:
                 retriever.search_kwargs["k"] = retrieval_k
 
             self.logger.info(f"Attempting to retrieve top {retrieval_k} docs for: '{search_query}'")
-            docs = retriever.get_relevant_documents(search_query)
+            docs = retriever.invoke(search_query)
             self.logger.info(f"Retrieved {len(docs)} documents.")
         except Exception as e:
             self.logger.error(f"Error during document retrieval: {e}", exc_info=True)
@@ -726,7 +728,7 @@ class CoreRAGEngine:
         docs_with_scores = []
         for doc in docs:
             try:
-                score_result: RerankScore = self.document_reranker_chain({
+                score_result: RerankScore = self.document_reranker_chain.invoke({
                     "question": question,
                     "document_content": doc.page_content
                 })
@@ -761,7 +763,7 @@ class CoreRAGEngine:
             src = doc.metadata.get("source", "unknown")
             self.logger.debug(f"Grading doc {idx+1}/{len(docs)} from source '{src}'")
             try:
-                grade: RelevanceGrade = self.document_relevance_grader_chain({
+                grade: RelevanceGrade = self.document_relevance_grader_chain.invoke({
                     "question": question,
                     "document_content": doc.page_content
                 })
@@ -805,7 +807,7 @@ class CoreRAGEngine:
             formatted_history_str = "No chat history."
 
         try:
-            analysis_result: QueryAnalysis = self.query_analyzer_chain({
+            analysis_result: QueryAnalysis = self.query_analyzer_chain.invoke({
                 "question": question,
                 "chat_history_formatted": formatted_history_str
             })
@@ -828,7 +830,7 @@ class CoreRAGEngine:
         self.logger.info("NODE: Rewriting query")
         original_question = state.get("original_question") or state["question"]
         try:
-            result = self.query_rewriter_chain({
+            result = self.query_rewriter_chain.invoke({
                 "question": original_question,
                 "chat_history": state.get("chat_history", [])
             })
@@ -865,7 +867,7 @@ class CoreRAGEngine:
 
         try:
             self.logger.debug(f"Invoking web search for: '{current_question}'")
-            raw_results = self.search_tool.run({"query": current_question})
+            raw_results = self.search_tool.invoke({"query": current_question})
 
             processed_web_docs: List[Document] = []
             if isinstance(raw_results, list):
@@ -920,17 +922,6 @@ class CoreRAGEngine:
             "question": original_question
         }
 
-        # TODO: Utilize state.get("query_analysis_results") for dynamic prompt engineering:
-        # analysis = state.get("query_analysis_results")
-        # if analysis:
-        #     query_type = analysis.query_type
-        #     main_intent = analysis.main_intent
-        #     # - Pass query_type/main_intent to the answer_generation_chain
-        #     # - The chain's prompt would then need to be designed to use this information
-        #     #   to tailor the answer style (e.g., direct for factual, summary for summary_request)
-        #     # Update input_data_for_chain accordingly if prompt changes
-
-
         if regeneration_feedback:
             self.logger.info(f"Generating answer with regeneration feedback: {regeneration_feedback}")
             input_data_for_chain["optional_regeneration_prompt_header_if_feedback"] = (
@@ -939,7 +930,7 @@ class CoreRAGEngine:
             input_data_for_chain["regeneration_feedback_if_any"] = regeneration_feedback + "\n\nOriginal Question: "
 
         try:
-            result_dict = self.answer_generation_chain(input_data_for_chain) 
+            result_dict = self.answer_generation_chain.invoke(input_data_for_chain) 
             generated_text = result_dict.get("text", "")
             state["generation"] = generated_text.strip()
         except Exception as e:
@@ -1149,9 +1140,6 @@ class CoreRAGEngine:
         except Exception as e:
             self.logger.error(f"Ingestion failed for collection '{name}': {e}", exc_info=True)
 
-    # ---------------------
-    # Public API: Legacy Query
-    # ---------------------
     def answer_query(
         self,
         question: str,

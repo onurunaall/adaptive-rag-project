@@ -74,9 +74,9 @@ def test_rag_direct_answer(populated_rag_engine, mocker):
         extracted_keywords=[],
         is_ambiguous=False
     )
-    mocker.patch.object(engine.query_analyzer_chain, '__call__', return_value=mock_analysis)
-    mocker.patch.object(engine.query_rewriter_chain, '__call__', return_value={'text': 'What is the capital of France?'})
-    mocker.patch.object(engine.answer_generation_chain, '__call__', return_value={'text': 'The answer is Paris.'})
+    mocker.patch.object(engine.query_analyzer_chain, "invoke", return_value=mock_analysis)
+    mocker.patch.object(engine.query_rewriter_chain, "invoke", return_value={'text': 'What is the capital of France?'})
+    mocker.patch.object(engine.answer_generation_chain, "invoke", return_value={'text': 'The answer is Paris.'})
     mocker.patch.object(engine, '_grounding_check_node', return_value={"regeneration_feedback": None})
 
     res = engine.run_full_rag_workflow("What is the capital of France?", collection_name=collection)
@@ -88,8 +88,8 @@ def test_rag_web_search_fallback(rag_engine, mocker):
 
     mocker.patch.object(engine, '_retrieve_node', return_value={"documents": []})
     mocker.patch.object(engine, '_grade_documents_node', return_value={"relevance_check_passed": False, "documents": []})
-    mocker.patch.object(engine.query_rewriter_chain, '__call__', return_value={'text': 'What is AlphaFold 3?'})
-    mocker.patch.object(engine.answer_generation_chain, '__call__', return_value={'text': 'Web result: AlphaFold3 is an AI model.'})
+    mocker.patch.object(engine.query_rewriter_chain, "invoke", return_value={'text': 'What is AlphaFold 3?'})
+    mocker.patch.object(engine.answer_generation_chain, "invoke", return_value={'text': 'Web result: AlphaFold3 is an AI model.'})
     mocker.patch.object(engine.search_tool, 'run', return_value=[{"content": "AlphaFold3 is an AI model."}])
 
     res = engine.run_full_rag_workflow("What is AlphaFold 3?")
@@ -101,7 +101,10 @@ def test_grounding_check_node_on_failure(rag_engine, mocker):
         ungrounded_statements=["The sky is green."],
         correction_suggestion="The answer should stick to the context."
     )
-    mocker.patch.object(rag_engine.grounding_check_chain, '__call__', return_value=mock_failure_output)
+    mocker.patch.object(
+        rag_engine.grounding_check_chain,
+        "invoke",
+        return_value=mock_failure_output)
 
     initial_state = {
         "question": "What color is the sky?",
@@ -118,7 +121,10 @@ def test_grounding_check_node_on_failure(rag_engine, mocker):
 
 def test_grounding_check_node_on_success(rag_engine, mocker):
     mock_success_output = GroundingCheck(is_grounded=True)
-    mocker.patch.object(rag_engine.grounding_check_chain, '__call__', return_value=mock_success_output)
+    mocker.patch.object(
+        rag_engine.grounding_check_chain,
+        "invoke",
+        return_value=mock_success_output)
 
     initial_state = {
         "context": "The sky is blue.",
@@ -161,7 +167,7 @@ def test_route_after_grounding_check(rag_engine):
 def test_grade_documents_node_handles_parsing_error(rag_engine, mocker):
     mocker.patch.object(
         rag_engine.document_relevance_grader_chain,
-        '__call__',
+        "invoke",
         side_effect=Exception("LLM or parsing failed")
     )
 
@@ -182,7 +188,7 @@ def test_rerank_documents_node_sorts_correctly(rag_engine, mocker):
     ]
     mocker.patch.object(
         rag_engine.document_reranker_chain,
-        '__call__',
+        "invoke",
         side_effect=mock_scores
     )
 
@@ -194,7 +200,7 @@ def test_document_relevance_grader_chain_parsing(rag_engine, mocker):
     correct_response = RelevanceGrade(is_relevant=True, justification="Matches user question")
     mocker.patch.object(
         rag_engine.document_relevance_grader_chain,
-        '__call__',
+        "invoke",
         return_value=correct_response
     )
 
@@ -210,7 +216,7 @@ def test_document_relevance_grader_chain_parsing(rag_engine, mocker):
 def test_document_relevance_grader_chain_bad_json(rag_engine, mocker):
     mocker.patch.object(
         rag_engine.document_relevance_grader_chain,
-        '__call__',
+        "invoke",
         side_effect=json.JSONDecodeError("Expecting value", "NOT JSON", 0)
     )
 
