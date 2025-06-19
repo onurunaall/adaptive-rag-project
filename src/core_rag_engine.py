@@ -795,7 +795,7 @@ class CoreRAGEngine:
                 "question": original_question,
                 "chat_history": state.get("chat_history", [])
             })
-            rewritten_query = result.get("text", "").strip()
+            rewritten_query = result.strip()
             if rewritten_query and rewritten_query.lower() != original_question.lower():
                 self.logger.info(f"Rewrote '{original_question}' → '{rewritten_query}'")
                 state["question"] = rewritten_query
