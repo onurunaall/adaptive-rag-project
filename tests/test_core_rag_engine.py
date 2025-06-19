@@ -68,15 +68,23 @@ def test_ingest_direct_documents(rag_engine, mock_embedding):
 def test_rag_direct_answer(populated_rag_engine, mocker):
     engine, collection = populated_rag_engine
 
-    mock_analysis = QueryAnalysis(
-        query_type="factual_lookup",
-        main_intent="testing",
-        extracted_keywords=[],
-        is_ambiguous=False
+    # FIX: Use robust mocking for each chain
+    mock_analyzer = Mock()
+    mock_analyzer.invoke.return_value = QueryAnalysis(
+        query_type="factual_lookup", main_intent="testing", extracted_keywords=[], is_ambiguous=False
     )
-    mocker.patch.object(engine.query_analyzer_chain, "invoke", return_value=mock_analysis)
-    mocker.patch.object(engine.query_rewriter_chain, "invoke", return_value={'text': 'What is the capital of France?'})
-    mocker.patch.object(engine.answer_generation_chain, "invoke", return_value={'text': 'The answer is Paris.'})
+    mocker.patch.object(engine, 'query_analyzer_chain', mock_analyzer)
+
+    mock_rewriter = Mock()
+    # Note: the output of the rewriter is the full object, not just the text
+    mock_rewriter.invoke.return_value = "What is the capital of France?"
+    mocker.patch.object(engine, 'query_rewriter_chain', mock_rewriter)
+
+    mock_answer_gen = Mock()
+    mock_answer_gen.invoke.return_value = "The answer is Paris."
+    mocker.patch.object(engine, 'answer_generation_chain', mock_answer_gen)
+
+    # This mock is for a node, not a chain, so it's fine as is
     mocker.patch.object(engine, '_grounding_check_node', return_value={"regeneration_feedback": None})
 
     res = engine.run_full_rag_workflow("What is the capital of France?", collection_name=collection)
@@ -88,9 +96,19 @@ def test_rag_web_search_fallback(rag_engine, mocker):
 
     mocker.patch.object(engine, '_retrieve_node', return_value={"documents": []})
     mocker.patch.object(engine, '_grade_documents_node', return_value={"relevance_check_passed": False, "documents": []})
-    mocker.patch.object(engine.query_rewriter_chain, "invoke", return_value={'text': 'What is AlphaFold 3?'})
-    mocker.patch.object(engine.answer_generation_chain, "invoke", return_value={'text': 'Web result: AlphaFold3 is an AI model.'})
-    mocker.patch.object(engine.search_tool, 'run', return_value=[{"content": "AlphaFold3 is an AI model."}])
+    
+    mock_rewriter = Mock()
+    mock_rewriter.invoke.return_value = "What is AlphaFold 3?"
+    mocker.patch.object(engine, 'query_rewriter_chain', mock_rewriter)
+
+    mock_answer_gen = Mock()
+    mock_answer_gen.invoke.return_value = "Web result: AlphaFold3 is an AI model."
+    mocker.patch.object(engine, 'answer_generation_chain', mock_answer_gen)
+    
+    mock_search_tool = Mock()
+    # The search tool returns a list of dictionaries, which the node processes into Documents
+    mock_search_tool.invoke.return_value = [{"content": "AlphaFold3 is an AI model."}]
+    mocker.patch.object(engine, 'search_tool', mock_search_tool)
 
     res = engine.run_full_rag_workflow("What is AlphaFold 3?")
     assert "AlphaFold3" in res["answer"]
@@ -101,11 +119,11 @@ def test_grounding_check_node_on_failure(rag_engine, mocker):
         ungrounded_statements=["The sky is green."],
         correction_suggestion="The answer should stick to the context."
     )
-    mocker.patch.object(
-        rag_engine.grounding_check_chain,
-        "invoke",
-        return_value=mock_failure_output)
-
+    
+    mock_chain = Mock()
+    mock_chain.invoke.return_value = mock_failure_output
+    mocker.patch.object(rag_engine, 'grounding_check_chain', mock_chain)
+    
     initial_state = {
         "question": "What color is the sky?",
         "context": "The context says the sky is blue.",
@@ -121,10 +139,10 @@ def test_grounding_check_node_on_failure(rag_engine, mocker):
 
 def test_grounding_check_node_on_success(rag_engine, mocker):
     mock_success_output = GroundingCheck(is_grounded=True)
-    mocker.patch.object(
-        rag_engine.grounding_check_chain,
-        "invoke",
-        return_value=mock_success_output)
+    
+    mock_chain = Mock()
+    mock_chain.invoke.return_value = mock_success_output
+    mocker.patch.object(rag_engine, 'grounding_check_chain', mock_chain)
 
     initial_state = {
         "context": "The sky is blue.",
@@ -165,11 +183,9 @@ def test_route_after_grounding_check(rag_engine):
     assert rag_engine._route_after_grounding_check(state_max_attempts) == END
 
 def test_grade_documents_node_handles_parsing_error(rag_engine, mocker):
-    mocker.patch.object(
-        rag_engine.document_relevance_grader_chain,
-        "invoke",
-        side_effect=Exception("LLM or parsing failed")
-    )
+    mock_chain = Mock()
+    mock_chain.invoke.side_effect = Exception("LLM or parsing failed")
+    mocker.patch.object(rag_engine, 'document_relevance_grader_chain', mock_chain)
 
     state = {
         "question": "AI?",
@@ -186,11 +202,10 @@ def test_rerank_documents_node_sorts_correctly(rag_engine, mocker):
         RerankScore(relevance_score=0.1, justification=""),
         RerankScore(relevance_score=0.9, justification="")
     ]
-    mocker.patch.object(
-        rag_engine.document_reranker_chain,
-        "invoke",
-        side_effect=mock_scores
-    )
+    
+    mock_chain = Mock()
+    mock_chain.invoke.side_effect = mock_scores
+    mocker.patch.object(rag_engine, 'document_reranker_chain', mock_chain)
 
     result_state = rag_engine._rerank_documents_node({"documents": docs, "question": "test"})
     assert result_state["documents"][0].page_content == "High"
@@ -198,11 +213,10 @@ def test_rerank_documents_node_sorts_correctly(rag_engine, mocker):
 
 def test_document_relevance_grader_chain_parsing(rag_engine, mocker):
     correct_response = RelevanceGrade(is_relevant=True, justification="Matches user question")
-    mocker.patch.object(
-        rag_engine.document_relevance_grader_chain,
-        "invoke",
-        return_value=correct_response
-    )
+    
+    mock_chain = Mock()
+    mock_chain.invoke.return_value = correct_response
+    mocker.patch.object(rag_engine, 'document_relevance_grader_chain', mock_chain)
 
     state = {
         "question": "What is AI?",
@@ -214,11 +228,9 @@ def test_document_relevance_grader_chain_parsing(rag_engine, mocker):
     assert result["relevance_check_passed"] is True
     
 def test_document_relevance_grader_chain_bad_json(rag_engine, mocker):
-    mocker.patch.object(
-        rag_engine.document_relevance_grader_chain,
-        "invoke",
-        side_effect=json.JSONDecodeError("Expecting value", "NOT JSON", 0)
-    )
+    mock_chain = Mock()
+    mock_chain.invoke.side_effect = json.JSONDecodeError("Expecting value", "NOT JSON", 0)
+    mocker.patch.object(rag_engine, 'document_relevance_grader_chain', mock_chain)
 
     state = {
         "question": "AI?",
@@ -231,14 +243,14 @@ def test_document_relevance_grader_chain_bad_json(rag_engine, mocker):
 
 
 def test_query_rewriter_chain_parsing(rag_engine, mocker):
-    mocker.patch.object(
-        rag_engine.query_rewriter_chain,
-        '__call__',
-        return_value={"text": "Rewritten: What is LangGraph?"}
-    )
+    mock_chain = Mock()
+    mock_chain.invoke.return_value = "Rewritten: What is LangGraph?"
+    mocker.patch.object(rag_engine, 'query_rewriter_chain', mock_chain)
 
     state = {"question": "What about LG?", "original_question": "What about LG?"}
     result = rag_engine._rewrite_query_node(state)
+    
+    # In the source, the rewriter output is now just the string, not a dict
     assert result["question"] == "Rewritten: What is LangGraph?"
 
 def test_ingest_handles_oserror(monkeypatch, rag_engine, mocker, mock_embedding):

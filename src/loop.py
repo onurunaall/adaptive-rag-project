@@ -10,6 +10,7 @@ from langchain_core.output_parsers import PydanticOutputParser, StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_experimental.utilities import PythonREPL
 from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_tavily import TavilySearch
 from langchain_community.vectorstores import Chroma
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.tools import Tool
@@ -59,19 +60,21 @@ class AgentLoopWorkflow:
         self.model_name = model or app_settings.agent.agent_model_name
         _enable_tavily = enable_tavily_search if enable_tavily_search is not None else app_settings.agent.enable_tavily_search_by_default
         _enable_repl = enable_python_repl if enable_python_repl is not None else app_settings.agent.enable_python_repl_by_default
-
+        
         self.core_rag_engine = core_rag_engine_instance
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(logging.INFO)
 
         if not self.openai_api_key:
             self.logger.error("OPENAI_API_KEY missing for AgentLoopWorkflow.")
+        
         self.chat_model = ChatOpenAI(model=self.model_name, openai_api_key=self.openai_api_key)
+        
         self.tools: List[Tool] = []
         if _enable_tavily:
             tavily_key = app_settings.api.tavily_api_key
             if tavily_key:
-                self.tools.append(TavilySearchResults(api_key=tavily_key, max_results=3))
+                self.tools.append(TavilySearch(api_key=tavily_key, max_results=3))
         if _enable_repl:
             self.repl = PythonREPL()
             self.tools.append(Tool(name="python_repl", func=self.repl.run, description="Executes Python code."))
