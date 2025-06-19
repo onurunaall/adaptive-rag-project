@@ -29,11 +29,8 @@ def test_agent_plan_and_execute_workflow(core_engine_for_agent, mocker):
     Tests that the agent can follow a mocked plan, execute each tool step,
     and produce a final summary.
     """
-    # --- FIX: We will create a manual graph with mocked nodes ---
-
-    # 1. Define the mock tool
     mock_stock_tool = Mock()
-    mock_stock_tool.run.return_value = "Successfully fetched news for GOOG."
+    mock_stock_tool.invoke.return_value = "Successfully fetched news for GOOG."
     mock_stock_tool.name = "FetchStockNews"
 
     # 2. Define the plan we want the agent to execute
@@ -81,6 +78,6 @@ def test_agent_plan_and_execute_workflow(core_engine_for_agent, mocker):
     assert isinstance(final_state.get("agent_outcome"), AgentFinish)
 
     # Verify the mock tool was called correctly
-    mock_stock_tool.run.assert_called_once_with(
+    mock_stock_tool.invoke.assert_called_once_with(
         {"tickers_input": "GOOG", "max_articles_per_ticker": 1}
     )

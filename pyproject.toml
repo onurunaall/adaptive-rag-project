@@ -29,6 +29,7 @@ dependencies = [
     "python-dotenv",
     "streamlit",
     "tavily-python",
+    "langchain-tavily",
     "tiktoken"]
 
 [project.optional-dependencies]

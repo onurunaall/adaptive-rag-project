@@ -9,15 +9,14 @@ from dotenv import load_dotenv
 from langchain_community.chat_models import ChatOllama
 from langchain_community.embeddings import GPT4AllEmbeddings
 from langchain_community.document_loaders import WebBaseLoader, PyPDFLoader, TextLoader
-from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_community.vectorstores import Chroma
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.schema import Document
-from langchain.chains import LLMChain
+from langchain.schema import Document, StrOutputParser 
+from langchain_core.runnables import Runnable
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_core.output_parsers import StrOutputParser, PydanticOutputParser
@@ -393,21 +392,15 @@ class CoreRAGEngine:
             length_function=len,
         )
 
-    # ---------------------
-    # Search Tool
-    # ---------------------
-    def _init_search_tool(self) -> Optional[TavilySearchResults]:
+    def _init_search_tool(self) -> Optional[Runnable]: # Return type can be Runnable
         try:
             from langchain_tavily import TavilySearch
             return TavilySearch(api_key=self.tavily_api_key, max_results=5)
-        except ImportError:                    # package not installed → fallback
-            from langchain_community.tools.tavily_search import TavilySearchResults
-            return TavilySearchResults(api_key=self.tavily_api_key, max_results=5)
-
-    # ---------------------
-    # Chain Factories
-    # ---------------------
-    def _create_document_relevance_grader_chain(self) -> LLMChain:
+        except ImportError:
+            self.logger.warning("langchain-tavily is not installed. Please pip install langchain-tavily")
+            return None
+    
+    def _create_document_relevance_grader_chain(self) -> Runnable:
         parser = PydanticOutputParser(pydantic_object=RelevanceGrade)
         
         prompt_template = (
@@ -425,17 +418,11 @@ class CoreRAGEngine:
             partial_variables={"format_instructions": parser.get_format_instructions()}
         )
         
-        chain = LLMChain(
-            llm=self.json_llm,
-            prompt=prompt,
-            output_parser=parser,
-            verbose=False
-        )
-        
+        chain = prompt | self.json_llm | PydanticOutputParser(pydantic_object=RelevanceGrade)
         self.logger.info("Created document_relevance_grader_chain with PydanticOutputParser.")
         return chain
     
-    def _create_document_reranker_chain(self) -> LLMChain:
+    def _create_document_reranker_chain(self) -> Runnable:
         parser = PydanticOutputParser(pydantic_object=RerankScore)
 
         prompt_template = (
@@ -454,17 +441,12 @@ class CoreRAGEngine:
             partial_variables={"format_instructions": parser.get_format_instructions()}
         )
 
-        chain = LLMChain(
-            llm=self.json_llm,
-            prompt=prompt,
-            output_parser=parser,
-            verbose=False
-        )
+        chain = prompt | self.json_llm | PydanticOutputParser(pydantic_object=RerankScore)
 
         self.logger.info("Created document_reranker_chain with PydanticOutputParser.")
         return chain
     
-    def _create_query_analyzer_chain(self) -> LLMChain:
+    def _create_query_analyzer_chain(self) -> Runnable:
         self.logger.info("Creating query analyzer chain.")
         parser = PydanticOutputParser(pydantic_object=QueryAnalysis)
 
@@ -482,19 +464,13 @@ class CoreRAGEngine:
         prompt = ChatPromptTemplate.from_template(
             template=prompt_template_str,
             partial_variables={"format_instructions": parser.get_format_instructions()}
-            # input_variables inferred: ["question", "chat_history_formatted"]
         )
 
-        chain = LLMChain(
-            llm=self.json_llm,
-            prompt=prompt,
-            output_parser=parser,
-            verbose=False
-        )
 
+        chain = prompt | self.json_llm | parser 
         return chain
 
-    def _create_query_rewriter_chain(self) -> LLMChain:
+    def _create_query_rewriter_chain(self) -> Runnable:
         self.logger.info("Creating query rewriter chain with chat history support.")
         system_prompt = (
             "You are a query optimization assistant. Given 'Chat History' (if any) and "
@@ -508,15 +484,10 @@ class CoreRAGEngine:
             ("human", "Latest User Question to rewrite:\n{question}")
         ])
 
-        chain = LLMChain(
-            llm=self.llm,
-            prompt=prompt,
-            output_parser=StrOutputParser(),
-            verbose=False
-        )
+        chain = prompt | self.llm | StrOutputParser()
         return chain
 
-    def _create_answer_generation_chain(self) -> LLMChain:
+    def _create_answer_generation_chain(self) -> Runnable:
         self.logger.info("Creating answer generation chain with chat history and feedback support.")
         
         system_prompt = (
@@ -534,16 +505,11 @@ class CoreRAGEngine:
             ("human", "{regeneration_feedback_if_any}{question}")
         ])
 
-        chain = LLMChain(
-            llm=self.llm,
-            prompt=prompt,
-            output_parser=StrOutputParser(),
-            verbose=False
-        )        
+        chain = prompt | self.llm | StrOutputParser()        
         return chain
 
 
-    def _create_grounding_check_chain(self) -> LLMChain:
+    def _create_grounding_check_chain(self) -> Runnable:
         self.logger.info("Creating answer grounding check chain.")
         parser = PydanticOutputParser(pydantic_object=GroundingCheck)
         prompt = ChatPromptTemplate.from_template(
@@ -557,12 +523,7 @@ class CoreRAGEngine:
             ),
             partial_variables={"format_instructions": parser.get_format_instructions()}
         )
-        chain = LLMChain(
-            llm=self.json_llm,
-            prompt=prompt,
-            output_parser=parser,
-            verbose=False
-        )
+        chain = prompt | self.json_llm | parser
         return chain
 
     def _grounding_check_node(self, state: CoreGraphState) -> CoreGraphState:
@@ -583,7 +544,7 @@ class CoreRAGEngine:
             result: GroundingCheck = self.grounding_check_chain.invoke({
                 "context": context,
                 "generation": generation
-            })
+                })
 
             if not result.is_grounded:
                 feedback_parts = []
