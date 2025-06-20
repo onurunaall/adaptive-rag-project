@@ -96,7 +96,7 @@ def test_rag_web_search_fallback(rag_engine, mocker):
     """
     engine = rag_engine
     engine.tavily_api_key = "fake_key"
-
+    
     mocker.patch.object(engine, '_route_after_grading', return_value="web_search")
 
     mock_answer_gen = Mock()
@@ -106,11 +106,10 @@ def test_rag_web_search_fallback(rag_engine, mocker):
     mock_search_tool = Mock()
     mock_search_tool.invoke.return_value = [{"content": "AlphaFold3 is an AI model."}]
     mocker.patch.object(engine, 'search_tool', mock_search_tool)
-
+    
     mocker.patch.object(engine, '_grounding_check_node', return_value={"regeneration_feedback": None})
     
     res = engine.run_full_rag_workflow("What is AlphaFold 3?")
-    
     assert "AlphaFold3" in res["answer"]
 
 def test_grounding_check_node_on_failure(rag_engine, mocker):
