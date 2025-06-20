@@ -901,6 +901,13 @@ class CoreRAGEngine:
             state["generation"] = "Error generating answer."
             state["error_message"] = str(e)
         return state
+    
+    def _increment_retries_node(self, state: CoreGraphState) -> CoreGraphState:
+        """Increments the retry counter in the state."""
+        self.logger.info("NODE: Incrementing retries...")
+        retries = state.get("retries", 0)
+        state["retries"] = retries + 1
+        return state
 
     def _route_after_grading(self, state: CoreGraphState) -> str:
         self.logger.info("Routing after grading...")
@@ -920,10 +927,9 @@ class CoreRAGEngine:
             else:
                 self.logger.info("...No web search tool available. Generating answer from existing context.")
                 return "generate_answer"
-
-        self.logger.info("...Documents not relevant. Retrying with a rewritten query.")
-        state["retries"] = retries + 1
-        return "rewrite_query"
+        
+        self.logger.info("...Documents not relevant. Incrementing retries and rewriting.")
+        return "increment_retries"
 
     # ---------------------
     # Workflow Compilation
@@ -940,27 +946,30 @@ class CoreRAGEngine:
         graph.add_node("web_search", self._web_search_node)
         graph.add_node("generate_answer", self._generate_answer_node)
         graph.add_node("grounding_check", self._grounding_check_node)
+        graph.add_node("increment_retries", self._increment_retries_node)
 
         # Set new entry point
         graph.set_entry_point("analyze_query")
 
         # Routing
         graph.add_edge("analyze_query", "rewrite_query")
-        graph.add_edge("rewrite_query", "retrieve")
         graph.add_edge("retrieve", "rerank_documents")
         graph.add_edge("rerank_documents", "grade_documents")
+        graph.add_edge("web_search", "generate_answer")
+        graph.add_edge("generate_answer", "grounding_check")
+        graph.add_edge("increment_retries", "rewrite_query")
+        graph.add_edge("rewrite_query", "retrieve")
         
         graph.add_conditional_edges(
-            "grade_documents",
-            self._route_after_grading,
+        "grade_documents",
+        self._route_after_grading,
             {
                 "generate_answer": "generate_answer",
-                "rewrite_query": "rewrite_query",
+                "increment_retries": "increment_retries", # New path
                 "web_search": "web_search"
             }
         )
-        graph.add_edge("web_search", "generate_answer")
-        graph.add_edge("generate_answer", "grounding_check")
+        
         graph.add_conditional_edges(
             "grounding_check",
             self._route_after_grounding_check,
@@ -971,8 +980,8 @@ class CoreRAGEngine:
         )
 
         self.rag_workflow = graph.compile()
-        self.logger.info("RAG workflow compiled successfully with query analysis node.")
-
+        self.logger.info("RAG workflow compiled successfully with new retry logic.")
+        return self.rag_workflow
     # ---------------------
     # Public API: Ingestion
     # ---------------------
