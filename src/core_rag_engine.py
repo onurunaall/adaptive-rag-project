@@ -894,7 +894,7 @@ class CoreRAGEngine:
 
         try:
             result_dict = self.answer_generation_chain.invoke(input_data_for_chain) 
-            generated_text = result_dict.get("text", "")
+            generated_text = result_dict # <-- THE FIX
             state["generation"] = generated_text.strip()
         except Exception as e:
             self.logger.error(f"Generation error: {e}", exc_info=True)
@@ -903,23 +903,27 @@ class CoreRAGEngine:
         return state
 
     def _route_after_grading(self, state: CoreGraphState) -> str:
+        self.logger.info("Routing after grading...")
         passed = state.get("relevance_check_passed", False)
         retries = state.get("retries", 0)
-        self.logger.info(f"Routing after grading: passed={passed}, retries={retries}")
-        if passed:
-            return "generate_answer"
-        if retries < self.max_rewrite_retries:
-            state["retries"] = retries + 1
-            return "rewrite_query"
-        if self.search_tool:
-            state["run_web_search"] = "Yes"
-            return "web_search"
-        
-        # TODO: Consider using state.get("query_analysis_results").is_ambiguous
-        # to influence routing decisions if relevance is low.
 
-        state["context"] = state.get("context", "") or "No relevant information found."
-        return "generate_answer"
+        if passed:
+            self.logger.info("...Documents are relevant. Generating answer.")
+            return "generate_answer"
+
+        if retries >= self.max_rewrite_retries:
+            self.logger.info("...Max rewrite retries reached.")
+            if self.search_tool:
+                self.logger.info("...Performing web search.")
+                state["run_web_search"] = "Yes"
+                return "web_search"
+            else:
+                self.logger.info("...No web search tool available. Generating answer from existing context.")
+                return "generate_answer"
+
+        self.logger.info("...Documents not relevant. Retrying with a rewritten query.")
+        state["retries"] = retries + 1
+        return "rewrite_query"
 
     # ---------------------
     # Workflow Compilation

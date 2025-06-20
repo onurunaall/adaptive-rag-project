@@ -68,7 +68,6 @@ def test_ingest_direct_documents(rag_engine, mock_embedding):
 def test_rag_direct_answer(populated_rag_engine, mocker):
     engine, collection = populated_rag_engine
 
-    # FIX: Use robust mocking for each chain
     mock_analyzer = Mock()
     mock_analyzer.invoke.return_value = QueryAnalysis(
         query_type="factual_lookup", main_intent="testing", extracted_keywords=[], is_ambiguous=False
