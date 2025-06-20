@@ -77,7 +77,7 @@ def test_rag_direct_answer(populated_rag_engine, mocker):
 
     mock_rewriter = Mock()
     # Note: the output of the rewriter is the full object, not just the text
-    mock_rewriter.invoke.return_value = "What is the capital of France?"
+     mock_rewriter.invoke.return_value = "What is the capital city of France?"
     mocker.patch.object(engine, 'query_rewriter_chain', mock_rewriter)
 
     mock_answer_gen = Mock()
@@ -98,7 +98,7 @@ def test_rag_web_search_fallback(rag_engine, mocker):
     mocker.patch.object(engine, '_grade_documents_node', return_value={"relevance_check_passed": False, "documents": []})
     
     mock_rewriter = Mock()
-    mock_rewriter.invoke.return_value = "What is AlphaFold 3?"
+    mock_rewriter.invoke.return_value = "rewritten what is alphafold 3"
     mocker.patch.object(engine, 'query_rewriter_chain', mock_rewriter)
 
     mock_answer_gen = Mock()
