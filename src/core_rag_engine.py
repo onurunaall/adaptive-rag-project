@@ -894,7 +894,7 @@ class CoreRAGEngine:
 
         try:
             result_dict = self.answer_generation_chain.invoke(input_data_for_chain) 
-            generated_text = result_dict # <-- THE FIX
+            generated_text = result_dict
             state["generation"] = generated_text.strip()
         except Exception as e:
             self.logger.error(f"Generation error: {e}", exc_info=True)
