@@ -92,23 +92,19 @@ def test_rag_direct_answer(populated_rag_engine, mocker):
 def test_rag_web_search_fallback(rag_engine, mocker):
     """
     Tests that the graph correctly follows the web_search path when
-    document grading fails and retries are exhausted.
+    the router decides to.
     """
     engine = rag_engine
     engine.tavily_api_key = "fake_key"
 
-    mock_analyzer = Mock()
-    mock_analyzer.invoke.return_value = QueryAnalysis(
-        query_type="factual_lookup", main_intent="testing", extracted_keywords=[], is_ambiguous=False
-    )
-    mocker.patch.object(engine, 'query_analyzer_chain', mock_analyzer)
+    # --- THIS IS THE FINAL, CORRECTED TEST LOGIC ---
 
-    mock_rewriter = Mock()
-    mock_rewriter.invoke.return_value = "What is AlphaFold 3?"
-    mocker.patch.object(engine, 'query_rewriter_chain', mock_rewriter)
-
+    # 1. We mock the router itself to force the graph down the "web_search" branch.
+    #    This is the standard way to test a specific conditional path in a graph
+    #    and it prevents any possibility of an infinite loop.
     mocker.patch.object(engine, '_route_after_grading', return_value="web_search")
 
+    # 2. We mock the components that are called *after* this routing decision.
     mock_answer_gen = Mock()
     mock_answer_gen.invoke.return_value = "Web result: AlphaFold3 is an AI model."
     mocker.patch.object(engine, 'answer_generation_chain', mock_answer_gen)
@@ -117,9 +113,14 @@ def test_rag_web_search_fallback(rag_engine, mocker):
     mock_search_tool.invoke.return_value = [{"content": "AlphaFold3 is an AI model."}]
     mocker.patch.object(engine, 'search_tool', mock_search_tool)
 
+    # 3. We still need to mock the final step to prevent it from failing.
     mocker.patch.object(engine, '_grounding_check_node', return_value={"regeneration_feedback": None})
+    
+    # --- END OF FIX ---
 
+    # We no longer need to mock the other nodes because we are controlling the graph's path directly.
     res = engine.run_full_rag_workflow("What is AlphaFold 3?")
+    
     assert "AlphaFold3" in res["answer"]
 
 def test_grounding_check_node_on_failure(rag_engine, mocker):
