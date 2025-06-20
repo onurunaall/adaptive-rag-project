@@ -94,8 +94,7 @@ def test_rag_web_search_fallback(rag_engine, mocker):
     engine.tavily_api_key = "fake_key"
 
     mocker.patch.object(engine, '_retrieve_node', return_value={"documents": []})
-    mocker.patch.object(engine, '_grade_documents_node', return_value={"relevance_check_passed": False, "documents": []})
-    
+
     mock_rewriter = Mock()
     mock_rewriter.invoke.return_value = "rewritten what is alphafold 3"
     mocker.patch.object(engine, 'query_rewriter_chain', mock_rewriter)
