@@ -77,7 +77,7 @@ def test_rag_direct_answer(populated_rag_engine, mocker):
 
     mock_rewriter = Mock()
     # Note: the output of the rewriter is the full object, not just the text
-     mock_rewriter.invoke.return_value = "What is the capital city of France?"
+    mock_rewriter.invoke.return_value = "What is the capital city of France?"
     mocker.patch.object(engine, 'query_rewriter_chain', mock_rewriter)
 
     mock_answer_gen = Mock()
