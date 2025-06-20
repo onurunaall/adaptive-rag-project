@@ -796,14 +796,16 @@ class CoreRAGEngine:
                 "chat_history": state.get("chat_history", [])
             })
             rewritten_query = result.strip()
-            if rewritten_query and rewritten_query.lower() != original_question.lower():
+            if rewritten_query.lower() != original_question.lower():
                 self.logger.info(f"Rewrote '{original_question}' → '{rewritten_query}'")
-                state["question"] = rewritten_query
             else:
-                self.logger.info(f"No rewrite needed. Keeping '{original_question}'")
-                state["question"] = original_question
+                self.logger.info(f"No rewrite needed for question: '{original_question}'")
+
+            state["question"] = rewritten_query
+            
         except Exception as e:
             self.logger.error(f"Error during query rewriting: {e}", exc_info=True)
+            # If rewriting fails, fall back to the original question.
             state["question"] = original_question
             state["error_message"] = f"Query rewriting failed: {e}"
         return state
