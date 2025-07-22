@@ -115,13 +115,42 @@ class AgentLoopWorkflow:
             )
         ]
 
+    def _get_planner_prompt(self) -> ChatPromptTemplate:
+        """Creates and returns the planner prompt template."""
+        parser = PydanticOutputParser(pydantic_object=Plan)
+        
+        # Format tool descriptions
+        tool_descriptions = "\n".join([f"- {tool.name}: {tool.description}" for tool in self.tools])
+        
+        # Define the prompt template
+        prompt_template = (
+            "You are an intelligent planner that creates step-by-step execution plans to achieve user goals.\n\n"
+            "Available tools:\n{tool_descriptions}\n\n"
+            "User Goal: {goal}\n\n"
+            "Create a detailed plan to achieve this goal using ONLY the available tools listed above.\n"
+            "Each step should specify:\n"
+            "1. Which tool to use\n"
+            "2. The exact input for that tool\n"
+            "3. The reasoning for why this step is necessary\n\n"
+            "Respond with a JSON object that follows this exact schema:\n"
+            "{format_instructions}"
+        )        
+        
+        prompt = ChatPromptTemplate.from_template(template=prompt_template, partial_variables={"format_instructions": parser.get_format_instructions(), "tool_descriptions": tool_descriptions})
+        return prompt 
+
     def plan_step(self, state: AgentLoopState) -> dict:
         self.logger.info("PLANNING: Generating execution plan...")
-        # This is a dummy planner for now. In a real scenario, this would call an LLM.
-        # Based on the user's goal, it creates a plan.
-        # For the test, we will mock this entire function's return value.
-        plan = Plan(steps=[]) # Dummy plan
-        return {"plan": plan, "current_step_index": 0}
+        
+        prompt = self._get_planner_prompt()
+        planner_chain = prompt | self.chat_model | PydanticOutputParser(pydantic_object=Plan)
+        
+        try:
+            plan = planner_chain.invoke({"goal": state["input"]})
+            return {"plan": plan, "current_step_index": 0}
+        except Exception as e:
+            self.logger.error(f"Failed to generate plan: {e}")
+            return {"error": f"Failed to generate a plan: {e}"}
 
     def execute_step(self, state: AgentLoopState) -> dict:
         self.logger.info(f"EXECUTING step {state['current_step_index'] + 1}...")
@@ -186,4 +215,3 @@ class AgentLoopWorkflow:
         final_state = self.compiled_graph.invoke(initial_state)
         final_state["agent_outcome"] = AgentFinish(return_values={"output": final_state["final_summary"]}, log="")
         return final_state
-
