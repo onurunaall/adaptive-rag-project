@@ -97,30 +97,36 @@ def test_rag_web_search_fallback(rag_engine, mocker):
     engine = rag_engine
     engine.tavily_api_key = "fake_key"
 
-    # --- THIS IS THE FINAL, CORRECTED TEST LOGIC ---
+    # Mock the preceding nodes to prevent real API calls
+    mocker.patch.object(engine, '_retrieve_node', return_value={"documents": [], "context": ""})
+    
+    mock_query_analysis = QueryAnalysis(query_type="test", main_intent="test", extracted_keywords=[], is_ambiguous=False)
+    mocker.patch.object(engine, 'query_analyzer_chain', return_value=mock_query_analysis)
+    
+    mocker.patch.object(engine, 'query_rewriter_chain', return_value="test question")
+    
+    mocker.patch.object(engine, 'document_reranker_chain')
+    mocker.patch.object(engine, 'document_relevance_grader_chain')
 
-    # 1. We mock the router itself to force the graph down the "web_search" branch.
-    #    This is the standard way to test a specific conditional path in a graph
-    #    and it makes the infinite loop impossible.
+    # Mock the router to force the graph down the "web_search" branch
     mocker.patch.object(engine, '_route_after_grading', return_value="web_search")
 
-    # 2. We only need to mock the components that are called *after* this routing decision.
+    # Mock the components that are called after the routing decision
     mock_answer_gen = Mock()
     mock_answer_gen.invoke.return_value = "Web result: AlphaFold3 is an AI model."
     mocker.patch.object(engine, 'answer_generation_chain', mock_answer_gen)
 
     mock_search_tool = Mock()
-    mock_search_tool.invoke.return_value = [{"content": "AlphaFold3 is an AI model."}]
+    mock_search_tool.invoke.return_value = [{"content": "AlphaFold3 is an AI model.", "url": "http://fake.url"}]
     mocker.patch.object(engine, 'search_tool', mock_search_tool)
 
-    # 3. We mock the final step to prevent any other issues.
+    # Mock the final step to prevent any other issues
     mocker.patch.object(engine, '_grounding_check_node', return_value={"regeneration_feedback": None})
     
-    # We no longer need to mock the rewriter or analyzer for this specific test,
-    # because by mocking the router, we skip over them.
     res = engine.run_full_rag_workflow("What is AlphaFold 3?")
     
     assert "AlphaFold3" in res["answer"]
+    mock_search_tool.invoke.assert_called_once()
 
 def test_grounding_check_node_on_failure(rag_engine, mocker):
     mock_failure_output = GroundingCheck(
