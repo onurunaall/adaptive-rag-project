@@ -868,7 +868,7 @@ class CoreRAGEngine:
             state["error_message"] = f"Web search execution failed: {e}"
 
         return state
-
+        
     def _generate_answer_node(self, state: CoreGraphState) -> CoreGraphState:
         self.logger.info("NODE: Generating answer")
         question = state["question"]
@@ -876,7 +876,7 @@ class CoreRAGEngine:
         context = state.get("context", "")
         chat_history = state.get("chat_history", [])
         regeneration_feedback = state.get("regeneration_feedback")
-
+    
         input_data_for_chain = {
             "context": context,
             "chat_history": chat_history,
@@ -884,17 +884,16 @@ class CoreRAGEngine:
             "regeneration_feedback_if_any": "",
             "question": original_question
         }
-
+    
         if regeneration_feedback:
             self.logger.info(f"Generating answer with regeneration feedback: {regeneration_feedback}")
             input_data_for_chain["optional_regeneration_prompt_header_if_feedback"] = (
                 "You are attempting to regenerate a previous answer that had issues."
             )
             input_data_for_chain["regeneration_feedback_if_any"] = regeneration_feedback + "\n\nOriginal Question: "
-
+    
         try:
-            result_dict = self.answer_generation_chain.invoke(input_data_for_chain) 
-            generated_text = result_dict
+            generated_text = self.answer_generation_chain.invoke(input_data_for_chain)
             state["generation"] = generated_text.strip()
         except Exception as e:
             self.logger.error(f"Generation error: {e}", exc_info=True)
