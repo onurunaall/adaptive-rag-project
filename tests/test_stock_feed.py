@@ -2,30 +2,67 @@ import pytest
 from src.stock import fetch_stock_news_documents
 from langchain.schema import Document
 
-def test_fetch_stock_news_single_ticker():
+def test_fetch_stock_news_single_ticker(mocker):
+    # Mock YahooFinanceNewsTool to avoid live API calls
+    mock_article_data = [
+        {
+            "title": "Apple Reports Strong Q4 Results",
+            "link": "https://finance.yahoo.com/news/apple-results",
+            "published": "2024-01-15",
+            "summary": "Apple Inc. reported better than expected quarterly results."
+        }
+    ]
+    mock_tool = mocker.Mock()
+    mock_tool.run.return_value = mock_article_data
+    mocker.patch('src.stock.YahooFinanceNewsTool', return_value=mock_tool)
+    
     tickers = "AAPL"
     max_articles = 1
     docs = fetch_stock_news_documents(tickers, max_articles)
+    
     assert isinstance(docs, list)
-    if docs:
-        assert len(docs) <= max_articles
-        for doc in docs:
-            assert isinstance(doc, Document)
-            assert "source" in doc.metadata
-            assert "title" in doc.metadata
-            assert "tickers" in doc.metadata
-            assert tickers in doc.metadata["tickers"]
-
-def test_fetch_stock_news_multiple_tickers():
+    assert len(docs) == 1
+    doc = docs[0]
+    assert isinstance(doc, Document)
+    assert "source" in doc.metadata
+    assert "title" in doc.metadata
+    assert "tickers" in doc.metadata
+    assert tickers in doc.metadata["tickers"]
+    assert doc.page_content == "Apple Inc. reported better than expected quarterly results."
+    mock_tool.run.assert_called_once_with("AAPL")
+    
+def test_fetch_stock_news_multiple_tickers(mocker):
+    # Mock multiple articles for multiple tickers
+    mock_articles = [
+        {
+            "title": "Microsoft Cloud Growth",
+            "link": "https://finance.yahoo.com/news/msft-cloud",
+            "published": "2024-01-15",
+            "summary": "Microsoft sees strong cloud growth."
+        },
+        {
+            "title": "Google AI Advances",
+            "link": "https://finance.yahoo.com/news/googl-ai",
+            "published": "2024-01-15", 
+            "summary": "Google announces new AI capabilities."
+        }
+    ]
+    mock_tool = mocker.Mock()
+    mock_tool.run.return_value = mock_articles
+    mocker.patch('src.stock.YahooFinanceNewsTool', return_value=mock_tool)
+    
     tickers = ["MSFT", "GOOGL"]
     max_articles = 1
     docs = fetch_stock_news_documents(tickers, max_articles)
+    
     assert isinstance(docs, list)
-    if docs:
-        for doc in docs:
-            assert isinstance(doc, Document)
-            assert "tickers" in doc.metadata
-
+    assert len(docs) == 2
+    for doc in docs:
+        assert isinstance(doc, Document)
+        assert "tickers" in doc.metadata
+        assert "MSFT,GOOGL" in doc.metadata["tickers"]
+    mock_tool.run.assert_called_once_with("MSFT,GOOGL")
+    
 def test_fetch_stock_news_empty_input():
     assert fetch_stock_news_documents("", 0) == []
     assert fetch_stock_news_documents([], 0) == []
@@ -45,11 +82,11 @@ def test_fetch_stock_news_documents_handles_api_exception(mocker):
     mock_tool = mocker.Mock()
     mock_tool.run.side_effect = Exception("API down")
     mocker.patch('src.stock.YahooFinanceNewsTool', return_value=mock_tool)
-    try:
-        docs = fetch_stock_news_documents("AAPL", 1)
-        assert docs == [] or docs is None  # Your impl: should handle error gracefully, not crash
-    except Exception:
-        pytest.fail("Should not raise, should handle error internally.")
+    
+    docs = fetch_stock_news_documents("AAPL", 1)
+    # Function should return empty list on API failure, not raise exception
+    assert docs == []
+    mock_tool.run.assert_called_once_with("AAPL")
 
 def test_fetch_stock_news_documents_handles_malformed_article(mocker):
     # Simulate malformed tool response
