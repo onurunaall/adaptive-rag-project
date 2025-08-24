@@ -63,7 +63,7 @@ class EngineSettings(BaseSettings):
     default_collection_name: str = "insight_engine_default"
     persist_directory_base: Optional[str] = None
     max_rewrite_retries: int = 1
-    max_grounding_attempts: int = 1
+    max_grounding_attempts: int = 5
     default_retrieval_top_k: int = 5
     chunking_strategy: str = "adaptive"  # "adaptive", "recursive", "semantic", "hybrid"
     enable_document_type_detection: bool = True
