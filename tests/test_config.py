@@ -79,7 +79,7 @@ def test_embedding_settings_missing_model_name():
     settings = EmbeddingSettings(embedding_provider="gpt4all", embedding_model_name=None)
     model_name = settings.get_model_name_for_provider("gpt4all")
     assert model_name is None
-
+    
 def test_engine_settings_defaults():
     """Test that EngineSettings has proper defaults."""
     from src.config import EngineSettings
@@ -88,4 +88,4 @@ def test_engine_settings_defaults():
     assert settings.chunk_overlap == 100
     assert settings.default_collection_name == "insight_engine_default"
     assert settings.max_rewrite_retries == 1
-    assert settings.max_grounding_attempts == 1
+    assert settings.max_grounding_attempts == 5
