@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from src.config import settings as app_settings
 from src.chunking import AdaptiveChunker, BaseChunker, HybridChunker
+from src.hybrid_search import HybridRetriever, AdaptiveHybridRetriever
 
 try:
     from streamlit.runtime.uploaded_file_manager import UploadedFile 
