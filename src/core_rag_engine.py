@@ -157,7 +157,9 @@ class CoreRAGEngine:
         google_api_key: Optional[str] = None,
         max_rewrite_retries: Optional[int] = None,
         max_grounding_attempts: Optional[int] = None,
-        default_retrieval_top_k: Optional[int] = None
+        default_retrieval_top_k: Optional[int] = None,
+        enable_hybrid_search: Optional[bool] = None,
+        hybrid_search_alpha: Optional[float] = None
     ) -> None:
         # Load from AppSettings if parameters are not explicitly passed
         self.llm_provider = llm_provider or app_settings.llm.llm_provider
