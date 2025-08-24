@@ -30,7 +30,9 @@ dependencies = [
     "streamlit",
     "tavily-python",
     "langchain-tavily",
-    "tiktoken"]
+    "tiktoken",
+    "rank-bm25",
+    "scikit-learn"]
 
 [project.optional-dependencies]
 dev = [
