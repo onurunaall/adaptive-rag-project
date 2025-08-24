@@ -64,6 +64,12 @@ class EngineSettings(BaseSettings):
     max_rewrite_retries: int = 1
     max_grounding_attempts: int = 1
     default_retrieval_top_k: int = 5
+	chunking_strategy: str = "adaptive"  # "adaptive", "recursive", "semantic", "hybrid"
+	enable_document_type_detection: bool = True
+	semantic_chunking_threshold: str = "percentile"  # "percentile", "standard_deviation", "interquartile"
+	code_chunk_overlap: int = 50
+	academic_chunk_size: int = 800
+	financial_chunk_size: int = 1000
     
     model_config = SettingsConfigDict(env_prefix='', extra='ignore')
 
