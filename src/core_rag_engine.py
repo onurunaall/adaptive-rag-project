@@ -160,7 +160,8 @@ class CoreRAGEngine:
         max_grounding_attempts: Optional[int] = None,
         default_retrieval_top_k: Optional[int] = None,
         enable_hybrid_search: Optional[bool] = None,
-        hybrid_search_alpha: Optional[float] = None
+        hybrid_search_alpha: Optional[float] = None,
+        enable_advanced_grounding: Optional[bool] = None
     ) -> None:
         # Load from AppSettings if parameters are not explicitly passed
         self.llm_provider = llm_provider or app_settings.llm.llm_provider
@@ -206,30 +207,8 @@ class CoreRAGEngine:
         self.embedding_model = self._init_embedding_model()
 
         # Splitter and search tool
-        self.text_splitter = self._init_text_splitter()def _get_all_documents_from_collection(self, collection_name: str) -> List[Document]:
-    """
-    Retrieve all documents from a collection for hybrid search setup
-    """
-    try:
-        vectorstore = self.vectorstores.get(collection_name)
-        if not vectorstore:
-            return []
-        
-        # Get all document IDs from the collection
-        collection = vectorstore._collection
-        results = collection.get()
-        
-        # Convert to Document objects
-        documents = []
-        if results['documents'] and results['metadatas']:
-            for i, (content, metadata) in enumerate(zip(results['documents'], results['metadatas'])):
-                doc = Document(page_content=content, metadata=metadata or {})
-                documents.append(doc)
-        
-        return documents
-    except Exception as e:
-        self.logger.error(f"Failed to retrieve documents from collection '{collection_name}': {e}")
-        return []
+        self.text_splitter = self._init_text_splitter()
+                
         self.search_tool = self._init_search_tool()
 
         # Individual LLM Chains
@@ -247,8 +226,46 @@ class CoreRAGEngine:
         self.vectorstores: Dict[str, Chroma] = {}
         self.retrievers: Dict[str, Any] = {}
 
+        
+        # Advanced grounding settings
+        self.enable_advanced_grounding = enable_advanced_grounding if enable_advanced_grounding is not None else getattr(app_settings.engine, 'enable_advanced_grounding', False)
+        
+        # Initialize advanced grounding checker if enabled
+        self.advanced_grounding_checker = None
+        if self.enable_advanced_grounding:
+            try:
+                self.advanced_grounding_checker = MultiLevelGroundingChecker(self.llm)
+                self.logger.info("Advanced grounding checker initialized")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize advanced grounding checker: {e}")
+
         self.logger.info("CoreRAGEngine initialized and workflow compiled.")
 
+    def _get_all_documents_from_collection(self, collection_name: str) -> List[Document]:
+        """
+        Retrieve all documents from a collection for hybrid search setup
+        """
+        try:
+            vectorstore = self.vectorstores.get(collection_name)
+            if not vectorstore:
+                return []
+            
+            # Get all document IDs from the collection
+            collection = vectorstore._collection
+            results = collection.get()
+            
+            # Convert to Document objects
+            documents = []
+            if results['documents'] and results['metadatas']:
+                for i, (content, metadata) in enumerate(zip(results['documents'], results['metadatas'])):
+                    doc = Document(page_content=content, metadata=metadata or {})
+                    documents.append(doc)
+            
+            return documents
+        except Exception as e:
+            self.logger.error(f"Failed to retrieve documents from collection '{collection_name}': {e}")
+            return []
+        
     def _setup_logger(self) -> None:
         logger = logging.getLogger(self.__class__.__name__)
 
@@ -658,49 +675,135 @@ class CoreRAGEngine:
         context = state.get("context", "")
         generation = state.get("generation", "")
         question = state.get("original_question") or state.get("question", "")
-
+        documents = state.get("documents", [])
+    
         current_attempts = state.get("grounding_check_attempts", 0) + 1
         state["grounding_check_attempts"] = current_attempts
         state["regeneration_feedback"] = None
-
+    
         if not context or not generation or "Error generating answer." in generation:
             self.logger.info("Skipping grounding check (no context or generation, or generation error).")
             return {**state, "regeneration_feedback": None, "grounding_check_attempts": current_attempts}
-
+    
         try:
-            result: GroundingCheck = self.grounding_check_chain.invoke({
-                "context": context,
-                "generation": generation
-                })
-
-            if not result.is_grounded:
-                feedback_parts = []
-                if result.ungrounded_statements:
-                    feedback_parts.append(f"The following statements were ungrounded: {'; '.join(result.ungrounded_statements)}.")
-                if result.correction_suggestion:
-                    feedback_parts.append(f"Suggestion for correction: {result.correction_suggestion}.")
-
-                if not feedback_parts:
-                    feedback_parts.append("The answer was not fully grounded in the provided context. Please revise.")
-
-                regeneration_prompt = (
-                    f"The previous answer to the question '{question}' was not well-grounded. "
-                    f"{' '.join(feedback_parts)} "
-                    "Please generate a new answer focusing ONLY on the provided documents and addressing these issues."
-                )
-                state["regeneration_feedback"] = regeneration_prompt
-                self.logger.warning(f"Grounding check FAILED (Attempt {current_attempts}). Feedback: {regeneration_prompt}")
+            if self.enable_advanced_grounding and self.advanced_grounding_checker:
+                # Use advanced multi-level grounding check
+                import asyncio
+                
+                try:
+                    # Run advanced grounding check
+                    advanced_results = asyncio.run(
+                        self.advanced_grounding_checker.perform_comprehensive_grounding_check(answer=generation,
+                                                                                              context=context,
+                                                                                              question=question,
+                                                                                              documents=documents))
+                    
+                    # Process advanced results
+                    overall_assessment = advanced_results.get("overall_assessment", {})
+                    is_acceptable = overall_assessment.get("is_acceptable", False)
+                    
+                    if not is_acceptable:
+                        # Generate detailed feedback based on advanced analysis
+                        feedback_parts = []
+                        
+                        detailed_grounding = advanced_results.get("detailed_grounding")
+                        if detailed_grounding and hasattr(detailed_grounding, 'unsupported_claims') and detailed_grounding.unsupported_claims:
+                            feedback_parts.append(f"Unsupported claims found: {'; '.join(detailed_grounding.unsupported_claims[:3])}")
+                        
+                        consistency = advanced_results.get("consistency")
+                        if consistency and hasattr(consistency, 'contradictions_found') and consistency.contradictions_found:
+                            feedback_parts.append(f"Internal contradictions: {'; '.join(consistency.contradictions_found[:2])}")
+                        
+                        completeness = advanced_results.get("completeness")
+                        if completeness and hasattr(completeness, 'missing_aspects') and completeness.missing_aspects:
+                            feedback_parts.append(f"Missing important aspects: {'; '.join(completeness.missing_aspects[:2])}")
+                        
+                        hallucinations = advanced_results.get("hallucination_detection", {}).get("hallucinations", [])
+                        if hallucinations:
+                            feedback_parts.append(f"Potential hallucinations: {'; '.join(hallucinations[:2])}")
+                        
+                        if feedback_parts:
+                            recommendation = overall_assessment.get("recommendation", "Please improve the answer")
+                            regeneration_prompt = (
+                                f"The previous answer to '{question}' failed advanced verification. "
+                                f"Issues identified: {' | '.join(feedback_parts)}. "
+                                f"Recommendation: {recommendation}. "
+                                f"Please generate a new answer that strictly follows the provided context and addresses these issues."
+                            )
+                            state["regeneration_feedback"] = regeneration_prompt
+                            self.logger.warning(f"Advanced grounding check FAILED (Attempt {current_attempts}). Issues: {len(feedback_parts)}")
+                        else:
+                            # No specific issues identified, use general feedback
+                            state["regeneration_feedback"] = (
+                                f"The answer to '{question}' did not meet quality standards. "
+                                f"Please generate a more accurate answer based strictly on the provided context."
+                            )
+                    else:
+                        self.logger.info(f"Advanced grounding check PASSED (Attempt {current_attempts}). Score: {overall_assessment.get('overall_score', 'N/A')}")
+                        state["regeneration_feedback"] = None
+                    
+                    # Store detailed results for potential debugging
+                    state["advanced_grounding_results"] = advanced_results
+                    
+                except Exception as e:
+                    self.logger.error(f"Advanced grounding check failed with exception: {e}. Falling back to basic check.")
+                    # Fall back to basic grounding check
+                    result: GroundingCheck = self.grounding_check_chain.invoke({
+                        "context": context,
+                        "generation": generation
+                    })
+                    
+                    if not result.is_grounded:
+                        feedback_parts = []
+                        if result.ungrounded_statements:
+                            feedback_parts.append(f"Ungrounded statements: {'; '.join(result.ungrounded_statements)}")
+                        if result.correction_suggestion:
+                            feedback_parts.append(f"Suggestion: {result.correction_suggestion}")
+                        
+                        regeneration_prompt = (
+                            f"The previous answer to '{question}' was not well-grounded. "
+                            f"{' '.join(feedback_parts)} "
+                            f"Please generate a new answer focusing ONLY on the provided documents."
+                        )
+                        state["regeneration_feedback"] = regeneration_prompt
+                        self.logger.warning(f"Basic grounding check FAILED (Attempt {current_attempts})")
+                    else:
+                        state["regeneration_feedback"] = None
+                        self.logger.info(f"Basic grounding check PASSED (Attempt {current_attempts})")
             else:
-                self.logger.info(f"Grounding check PASSED (Attempt {current_attempts}).")
-                state["regeneration_feedback"] = None
-
+                # Use basic grounding check
+                result: GroundingCheck = self.grounding_check_chain.invoke({
+                    "context": context,
+                    "generation": generation
+                })
+    
+                if not result.is_grounded:
+                    feedback_parts = []
+                    if result.ungrounded_statements:
+                        feedback_parts.append(f"The following statements were ungrounded: {'; '.join(result.ungrounded_statements)}.")
+                    if result.correction_suggestion:
+                        feedback_parts.append(f"Suggestion for correction: {result.correction_suggestion}.")
+    
+                    if not feedback_parts:
+                        feedback_parts.append("The answer was not fully grounded in the provided context. Please revise.")
+    
+                    regeneration_prompt = (
+                        f"The previous answer to the question '{question}' was not well-grounded. "
+                        f"{' '.join(feedback_parts)} "
+                        "Please generate a new answer focusing ONLY on the provided documents and addressing these issues."
+                    )
+                    state["regeneration_feedback"] = regeneration_prompt
+                    self.logger.warning(f"Basic grounding check FAILED (Attempt {current_attempts}). Feedback: {regeneration_prompt}")
+                else:
+                    self.logger.info(f"Basic grounding check PASSED (Attempt {current_attempts}).")
+                    state["regeneration_feedback"] = None
+    
         except Exception as e:
             self.logger.error(f"Grounding check failed with exception: {e}", exc_info=True)
             state["regeneration_feedback"] = f"A system error occurred during grounding check: {e}. Please try to generate a concise answer based on context."
             state["error_message"] = (state.get("error_message") or "") + f" | Grounding check exception: {e}"
-
+    
         return state
-
     def _route_after_grounding_check(self, state: CoreGraphState) -> str:
         self.logger.info(
             f"Routing after grounding check. Attempts: {state.get('grounding_check_attempts', 0)}. "
