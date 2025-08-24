@@ -9,24 +9,29 @@ from langchain.schema import Document
 
 from src.core_rag_engine import CoreRAGEngine, GroundingCheck, RerankScore, QueryAnalysis, RelevanceGrade
 
-
 @pytest.fixture
-def mock_embedding(mocker):
-    """Fixture to mock the OpenAI embedding function."""
-    return mocker.patch('langchain_openai.embeddings.base.OpenAIEmbeddings.embed_documents', return_value=[[0.1] * 1536])
-
+def mock_embedding():
+    """Fixture using LangChain's FakeEmbeddings for testing."""
+    from langchain_core.embeddings.fake import FakeEmbeddings
+    return FakeEmbeddings(size=1536)
+    
 @pytest.fixture(scope="module")
-def populated_rag_engine(rag_engine): # Add 'mocker' if not present, though patch is used here
+@pytest.fixture(scope="module")
+def populated_rag_engine(rag_engine):
     """
     Fixture that ingests two documents into a collection named 'rag_test_data'.
     """
-    cname = "rag_test_data"
-    docs = [Document(page_content="Paris is the capital of France. It is known for the Eiffel Tower.", metadata={"source": "france_doc"}),
-            Document(page_content="The OpenAI GPT-4 model is a large language model.", metadata={"source": "openai_doc"})]
+    from langchain_core.embeddings.fake import FakeEmbeddings
+    # Replace embedding model with FakeEmbeddings
+    rag_engine.embedding_model = FakeEmbeddings(size=1536)
     
-    with patch('langchain_openai.embeddings.base.OpenAIEmbeddings.embed_documents') as mock_embed:
-        mock_embed.return_value = [[0.1] * 1536, [0.2] * 1536]
-        rag_engine.ingest(direct_documents=docs, collection_name=cname, recreate_collection=True)
+    cname = "rag_test_data"
+    docs = [
+        Document(page_content="Paris is the capital of France. It is known for the Eiffel Tower.", metadata={"source": "france_doc"}),
+        Document(page_content="The OpenAI GPT-4 model is a large language model.", metadata={"source": "openai_doc"})
+    ]
+    
+    rag_engine.ingest(direct_documents=docs, collection_name=cname, recreate_collection=True)
     return rag_engine, cname
 
 @pytest.fixture(scope="module")
@@ -50,18 +55,38 @@ def rag_engine():
 
     # Remove the test directory after all tests in this module run
     shutil.rmtree(test_dir)
-
-def test_ingest_direct_documents(rag_engine, mock_embedding):
+    
+def test_ingest_direct_documents(rag_engine):
     """Tests that ingesting documents creates a queryable vector store."""
+    from langchain_core.embeddings.fake import FakeEmbeddings
+    rag_engine.embedding_model = FakeEmbeddings(size=1536)
+    
     cname = "test_ingest_direct"
     docs = [Document(page_content="LangGraph is a library.")]
-    # The mock_embedding fixture is now used automatically
     rag_engine.ingest(direct_documents=docs, collection_name=cname, recreate_collection=True)
     
     path = os.path.join(rag_engine.persist_directory_base, cname, "chroma.sqlite3")
     assert os.path.exists(path)
     
-    res = rag_engine._retrieve_node({"question": "What is LangGraph?", "collection_name": cname})
+    # Create complete state for _retrieve_node
+    state = {
+        "question": "What is LangGraph?",
+        "original_question": "What is LangGraph?",
+        "query_analysis_results": None,
+        "documents": [],
+        "context": "",
+        "web_search_results": None,
+        "generation": "",
+        "retries": 0,
+        "run_web_search": "No",
+        "relevance_check_passed": None,
+        "error_message": None,
+        "grounding_check_attempts": 0,
+        "regeneration_feedback": None,
+        "collection_name": cname,
+        "chat_history": []
+    }
+    res = rag_engine._retrieve_node(state)
     assert any("LangGraph" in doc.page_content for doc in res.get("documents", []))
 
 
@@ -117,7 +142,20 @@ def test_rag_web_search_fallback(rag_engine, mocker):
     mocker.patch.object(engine, 'answer_generation_chain', mock_answer_gen)
 
     mock_search_tool = Mock()
-    mock_search_tool.invoke.return_value = [{"content": "AlphaFold3 is an AI model.", "url": "http://fake.url"}]
+    mock_search_tool.invoke.return_value = """{
+        "query": "What is AlphaFold 3?",
+        "follow_up_questions": null,
+        "answer": null,
+        "images": [],
+        "results": [
+            {
+                "title": "AlphaFold 3 - AI Model",
+                "url": "http://fake.url",
+                "content": "AlphaFold3 is an AI model developed by Google DeepMind.",
+                "score": 0.95
+            }
+        ]
+    }"""
     mocker.patch.object(engine, 'search_tool', mock_search_tool)
 
     # Mock the final step to prevent any other issues
@@ -141,9 +179,20 @@ def test_grounding_check_node_on_failure(rag_engine, mocker):
     
     initial_state = {
         "question": "What color is the sky?",
+        "original_question": "What color is the sky?",
+        "query_analysis_results": None,
+        "documents": [],
         "context": "The context says the sky is blue.",
+        "web_search_results": None,
         "generation": "The sky is green.",
+        "retries": 0,
+        "run_web_search": "No",
+        "relevance_check_passed": None,
+        "error_message": None,
         "grounding_check_attempts": 0,
+        "regeneration_feedback": None,
+        "collection_name": None,
+        "chat_history": []
     }
     result_state = rag_engine._grounding_check_node(initial_state)
 
@@ -160,9 +209,21 @@ def test_grounding_check_node_on_success(rag_engine, mocker):
     mocker.patch.object(rag_engine, 'grounding_check_chain', mock_chain)
 
     initial_state = {
+        "question": "What color is the sky?",
+        "original_question": "What color is the sky?",
+        "query_analysis_results": None,
+        "documents": [],
         "context": "The sky is blue.",
+        "web_search_results": None,
         "generation": "The sky is blue.",
+        "retries": 0,
+        "run_web_search": "No",
+        "relevance_check_passed": None,
+        "error_message": None,
         "grounding_check_attempts": 0,
+        "regeneration_feedback": None,
+        "collection_name": None,
+        "chat_history": []
     }
     result_state = rag_engine._grounding_check_node(initial_state)
 
