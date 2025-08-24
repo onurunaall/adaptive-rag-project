@@ -72,6 +72,7 @@ class EngineSettings(BaseSettings):
 	financial_chunk_size: int = 1000
     enable_hybrid_search: bool = False
     hybrid_search_alpha: float = 0.7  # Weight for semantic vs keyword search
+	enable_advanced_grounding: bool = False	
     
     model_config = SettingsConfigDict(env_prefix='', extra='ignore')
 
