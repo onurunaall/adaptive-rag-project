@@ -190,6 +190,10 @@ class CoreRAGEngine:
         self.max_grounding_attempts = max_grounding_attempts if max_grounding_attempts is not None else app_settings.engine.max_grounding_attempts
         self.default_retrieval_top_k = default_retrieval_top_k if default_retrieval_top_k is not None else app_settings.engine.default_retrieval_top_k
         
+        # Hybrid search settings
+        self.enable_hybrid_search = enable_hybrid_search if enable_hybrid_search is not None else getattr(app_settings.engine, 'enable_hybrid_search', False)
+        self.hybrid_search_alpha = hybrid_search_alpha if hybrid_search_alpha is not None else getattr(app_settings.engine, 'hybrid_search_alpha', 0.7)
+        
         # Logger
         self._setup_logger()
 
@@ -201,7 +205,30 @@ class CoreRAGEngine:
         self.embedding_model = self._init_embedding_model()
 
         # Splitter and search tool
-        self.text_splitter = self._init_text_splitter()
+        self.text_splitter = self._init_text_splitter()def _get_all_documents_from_collection(self, collection_name: str) -> List[Document]:
+    """
+    Retrieve all documents from a collection for hybrid search setup
+    """
+    try:
+        vectorstore = self.vectorstores.get(collection_name)
+        if not vectorstore:
+            return []
+        
+        # Get all document IDs from the collection
+        collection = vectorstore._collection
+        results = collection.get()
+        
+        # Convert to Document objects
+        documents = []
+        if results['documents'] and results['metadatas']:
+            for i, (content, metadata) in enumerate(zip(results['documents'], results['metadatas'])):
+                doc = Document(page_content=content, metadata=metadata or {})
+                documents.append(doc)
+        
+        return documents
+    except Exception as e:
+        self.logger.error(f"Failed to retrieve documents from collection '{collection_name}': {e}")
+        return []
         self.search_tool = self._init_search_tool()
 
         # Individual LLM Chains
@@ -240,21 +267,45 @@ class CoreRAGEngine:
 
     def _init_or_load_vectorstore(self, collection_name: str, recreate: bool = False) -> None:
         """
-        Initializes an in-memory reference to a vector store, loading it from disk 
+        Initializes an in-memory reference to a vector store, loading it from disk
         if it exists and is not being recreated, or preparing for a new one.
         Ensures the retriever is set up with the current engine's default_retrieval_top_k.
         """
         persist_dir = self._get_persist_dir(collection_name)
-
+    
         if collection_name in self.vectorstores and not recreate:
-            # Already in memory and not recreating, ensure retriever is correctly configured if it wasn't
+            # Check if the retriever needs to be created or re-configured (e.g., k changed)
             if collection_name not in self.retrievers or self.retrievers[collection_name].search_kwargs.get('k') != self.default_retrieval_top_k:
-                self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
-                    search_kwargs={'k': self.default_retrieval_top_k}
-                )
-                self.logger.info(f"Retriever for in-memory collection '{collection_name}' re-configured with k={self.default_retrieval_top_k}.")
-            return # Already loaded and not recreating
-
+                if self.enable_hybrid_search:
+                    # Create hybrid retriever
+                    try:
+                        all_docs = self._get_all_documents_from_collection(collection_name)
+                        if all_docs:
+                            self.retrievers[collection_name] = AdaptiveHybridRetriever(
+                                vector_store=self.vectorstores[collection_name],
+                                documents=all_docs,
+                                k=self.default_retrieval_top_k
+                            )
+                            self.logger.info(f"Created hybrid retriever for collection '{collection_name}' with k={self.default_retrieval_top_k}")
+                        else:
+                            # Fallback to standard retriever if no docs are found for BM25
+                            self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
+                                search_kwargs={'k': self.default_retrieval_top_k}
+                            )
+                            self.logger.warning(f"Could not create hybrid retriever for '{collection_name}' (no documents found), using standard retriever")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to create hybrid retriever: {e}, using standard retriever")
+                        self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
+                            search_kwargs={'k': self.default_retrieval_top_k}
+                        )
+                else:
+                    # Standard retriever
+                    self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
+                        search_kwargs={'k': self.default_retrieval_top_k}
+                    )
+                self.logger.info(f"Retriever for collection '{collection_name}' configured with k={self.default_retrieval_top_k}")
+            return
+    
         if recreate:
             self.logger.info(f"Recreating collection '{collection_name}'. Removing existing if present.")
             if os.path.exists(persist_dir):
@@ -263,10 +314,8 @@ class CoreRAGEngine:
                 del self.vectorstores[collection_name]
             if collection_name in self.retrievers:
                 del self.retrievers[collection_name]
-            # Ready for index_documents to create a new one.
-            # No further action here as index_documents will handle actual creation.
             return
-
+    
         # If not in memory and not recreating, try to load from disk
         if os.path.exists(persist_dir):
             try:
@@ -276,24 +325,60 @@ class CoreRAGEngine:
                     embedding_function=self.embedding_model,
                     persist_directory=persist_dir
                 )
-                self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
-                    search_kwargs={'k': self.default_retrieval_top_k}
-                )
+                # After loading from disk, immediately set up the correct retriever
+                # This logic is similar to the fix above but for newly loaded collections
+                if self.enable_hybrid_search:
+                    all_docs = self._get_all_documents_from_collection(collection_name)
+                    if all_docs:
+                        self.retrievers[collection_name] = AdaptiveHybridRetriever(
+                            vector_store=self.vectorstores[collection_name],
+                            documents=all_docs,
+                            k=self.default_retrieval_top_k
+                        )
+                        self.logger.info(f"Created hybrid retriever for newly loaded collection '{collection_name}'")
+                    else:
+                        self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
+                            search_kwargs={'k': self.default_retrieval_top_k}
+                        )
+                else:
+                    self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
+                        search_kwargs={'k': self.default_retrieval_top_k}
+                    )
                 self.logger.info(f"Successfully loaded '{collection_name}' with k={self.default_retrieval_top_k}.")
             except Exception as e:
                 self.logger.error(f"Error loading vector store '{collection_name}' from {persist_dir}: {e}. A new one may be created if documents are indexed.", exc_info=True)
-                # Allow falling through to potentially create a new one if indexing happens later
-                if collection_name in self.vectorstores: # Should not happen if load failed, but defensive
+                if collection_name in self.vectorstores:
                     del self.vectorstores[collection_name]
                 if collection_name in self.retrievers:
                     del self.retrievers[collection_name]
         else:
             self.logger.info(f"No persisted vector store found for '{collection_name}' at {persist_dir}. It will be created upon first indexing.")
-            # No specific action needed here; index_documents will create it if docs are provided.
-
-    # ---------------------
-    # LLM Initialization
-    # ---------------------
+    
+    def _get_all_documents_from_collection(self, collection_name: str) -> List[Document]:
+        """
+        Retrieve all documents from a collection for hybrid search setup
+        """
+        try:
+            vectorstore = self.vectorstores.get(collection_name)
+            if not vectorstore:
+                return []
+            
+            # Get all document IDs from the collection
+            collection = vectorstore._collection
+            results = collection.get()
+            
+            # Convert to Document objects
+            documents = []
+            if results['documents'] and results['metadatas']:
+                for i, (content, metadata) in enumerate(zip(results['documents'], results['metadatas'])):
+                    doc = Document(page_content=content, metadata=metadata or {})
+                    documents.append(doc)
+            
+            return documents
+        except Exception as e:
+            self.logger.error(f"Failed to retrieve documents from collection '{collection_name}': {e}")
+            return []
+    
     def _init_llm(self, use_json_format: bool) -> Any:
         provider = self.llm_provider.lower()
         if provider == "openai":
