@@ -371,29 +371,66 @@ class CoreRAGEngine:
         model = self.embedding_model_name or "models/embedding-001"
         return GoogleGenerativeAIEmbeddings(model=model, google_api_key=self.google_api_key)
 
-    # ---------------------
-    # Text Splitter
-    # ---------------------
-    def _init_text_splitter(self) -> RecursiveCharacterTextSplitter:
-        use_tok = tiktoken is not None and self.llm_provider.lower() == "openai"
-        if use_tok:
+    def _init_text_splitter(self) -> BaseChunker:
+        """
+        Initialize text splitter based on configuration
+        """
+        strategy = getattr(app_settings.engine, 'chunking_strategy', 'adaptive')
+        
+        if strategy == "adaptive":
+            return AdaptiveChunker(
+                chunk_size=self.chunk_size,
+                chunk_overlap=self.chunk_overlap,
+                openai_api_key=self.openai_api_key,
+                model_name=self.llm_model_name
+            )
+        elif strategy == "semantic" and self.openai_api_key:
             try:
-                # Token-based splitting for OpenAI models
-                return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
-                    model_name=self.llm_model_name,
+                from langchain_experimental.text_splitter import SemanticChunker
+                embeddings = OpenAIEmbeddings(openai_api_key=self.openai_api_key)
+                return SemanticChunker(
+                    embeddings=embeddings,
+                    breakpoint_threshold_type=getattr(app_settings.engine, 'semantic_chunking_threshold', 'percentile')
+                )
+            except ImportError:
+                self.logger.warning("SemanticChunker not available, falling back to adaptive")
+                return AdaptiveChunker(
                     chunk_size=self.chunk_size,
                     chunk_overlap=self.chunk_overlap,
+                    openai_api_key=self.openai_api_key
                 )
-            except Exception:
-                self.logger.warning("Tiktoken splitter failed, falling back to default")
-
-        return RecursiveCharacterTextSplitter(
-            chunk_size=self.chunk_size,
-            chunk_overlap=self.chunk_overlap,
-            length_function=len,
-        )
-
-    def _init_search_tool(self) -> Optional[Runnable]: # Return type can be Runnable
+        elif strategy == "hybrid":
+            primary = AdaptiveChunker(
+                chunk_size=self.chunk_size,
+                chunk_overlap=self.chunk_overlap,
+                openai_api_key=self.openai_api_key
+            )
+            secondary = RecursiveCharacterTextSplitter(
+                chunk_size=self.chunk_size // 2,
+                chunk_overlap=self.chunk_overlap // 2,
+                length_function=len,
+            )
+            return HybridChunker(primary, secondary)
+        else:
+            # Default recursive splitter
+            use_tok = tiktoken is not None and self.llm_provider.lower() == "openai"
+            if use_tok:
+                try:
+                    return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+                        model_name=self.llm_model_name,
+                        chunk_size=self.chunk_size,
+                        chunk_overlap=self.chunk_overlap,
+                    )
+                except Exception:
+                    self.logger.warning("Tiktoken splitter failed, falling back to default")
+    
+            return RecursiveCharacterTextSplitter(
+                chunk_size=self.chunk_size,
+                chunk_overlap=self.chunk_overlap,
+                length_function=len,
+            )
+            
+    def _init_search_tool(self) -> Optional[Runnable]:
         try:
             from langchain_tavily import TavilySearch
             return TavilySearch(api_key=self.tavily_api_key, max_results=5)
