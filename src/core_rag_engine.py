@@ -1065,8 +1065,21 @@ class CoreRAGEngine:
     def split_documents(self, docs: List[Document]) -> List[Document]:
         if not docs:
             return []
-        chunks = self.text_splitter.split_documents(docs)
-        self.logger.info(f"Split into {len(chunks)} chunks")
+        
+        if isinstance(self.text_splitter, BaseChunker):
+            chunks = self.text_splitter.chunk_documents(docs)
+        else:
+            # Fallback for old-style splitters
+            chunks = self.text_splitter.split_documents(docs)
+        
+        self.logger.info(f"Split into {len(chunks)} chunks using {type(self.text_splitter).__name__}")
+        
+        # Log chunking statistics
+        chunk_sizes = [len(chunk.page_content) for chunk in chunks]
+        if chunk_sizes:
+            avg_size = sum(chunk_sizes) / len(chunk_sizes)
+            self.logger.info(f"Average chunk size: {avg_size:.0f} characters")
+        
         return chunks
         
     def index_documents(self, docs: List[Document], name: str, recreate: bool = False) -> None:
@@ -1075,7 +1088,6 @@ class CoreRAGEngine:
         d = self._get_persist_dir(name)
 
         if vs is None or recreate:
-            # Make sure the directory exists (or raise in the patched test)
             try:
                 os.makedirs(d, exist_ok=True)
             except Exception as e:
