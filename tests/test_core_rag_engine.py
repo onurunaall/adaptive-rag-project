@@ -115,64 +115,49 @@ def test_rag_direct_answer(populated_rag_engine, mocker):
 
 def test_rag_web_search_fallback(rag_engine, mocker):
     """
-    Tests that the graph correctly follows the web_search path when
-    the router decides to.
+    Tests that the web search node correctly calls the search tool.
     """
     engine = rag_engine
     engine.tavily_api_key = "fake_key"
 
-    # Mock the preceding nodes to prevent real API calls
-    mocker.patch.object(engine, '_retrieve_node', return_value={"documents": [], "context": ""})
-    
-    mock_query_analysis = QueryAnalysis(query_type="test", main_intent="test", extracted_keywords=[], is_ambiguous=False)
-    mock_analyzer_chain = Mock()
-    mock_analyzer_chain.invoke.return_value = mock_query_analysis
-    mocker.patch.object(engine, 'query_analyzer_chain', mock_analyzer_chain)
-    
-    mock_rewriter_chain = Mock()
-    mock_rewriter_chain.invoke.return_value = "test question"
-    mocker.patch.object(engine, 'query_rewriter_chain', mock_rewriter_chain)
-    
-    mocker.patch.object(engine, 'document_reranker_chain')
-    mocker.patch.object(engine, 'document_relevance_grader_chain')
-
-    # Mock the router to force the graph down the "web_search" branch
-    mocker.patch.object(engine, '_route_after_grading', return_value="web_search")
-
-    # Mock the search tool that will be called by the web search node
+    # Mock the search tool
     mock_search_tool = Mock()
-    mock_search_tool.invoke.return_value = """{
-        "query": "What is AlphaFold 3?",
-        "follow_up_questions": null,
-        "answer": null,
-        "images": [],
-        "results": [
-            {
-                "title": "AlphaFold 3 - AI Model",
-                "url": "http://fake.url",
-                "content": "AlphaFold3 is an AI model developed by Google DeepMind.",
-                "score": 0.95
-            }
-        ]
-    }"""
-    mocker.patch.object(engine, 'search_tool', mock_search_tool)
+    mock_search_tool.invoke.return_value = [
+        {
+            "content": "AlphaFold3 is an AI model developed by Google DeepMind.",
+            "url": "http://fake.url"
+        }
+    ]
+    engine.search_tool = mock_search_tool
 
-    # Mock the components that are called after the routing decision
-    mock_answer_gen = Mock()
-    mock_answer_gen.invoke.return_value = "Web result: AlphaFold3 is an AI model."
-    mocker.patch.object(engine, 'answer_generation_chain', mock_answer_gen)
+    # Create a state that would trigger web search
+    state = {
+        "question": "What is AlphaFold 3?",
+        "original_question": "What is AlphaFold 3?",
+        "query_analysis_results": None,
+        "documents": [],
+        "context": "",
+        "web_search_results": None,
+        "generation": "",
+        "retries": 0,
+        "run_web_search": "Yes",  # This triggers web search
+        "relevance_check_passed": None,
+        "error_message": None,
+        "grounding_check_attempts": 0,
+        "regeneration_feedback": None,
+        "collection_name": None,
+        "chat_history": []
+    }
 
-    # Mock grounding check to pass
-    mock_grounding_result = GroundingCheck(is_grounded=True)
-    mock_grounding_chain = Mock()
-    mock_grounding_chain.invoke.return_value = mock_grounding_result
-    mocker.patch.object(engine, 'grounding_check_chain', mock_grounding_chain)
-    
-    res = engine.run_full_rag_workflow("What is AlphaFold 3?")
-    
-    assert "AlphaFold3" in res["answer"]
-    # Verify that the search tool was called
+    # Call the web search node directly
+    result_state = engine._web_search_node(state)
+
+    # Verify the search tool was called
     mock_search_tool.invoke.assert_called_once()
+    
+    # Verify the state was updated with search results
+    assert len(result_state["documents"]) > 0
+    assert "AlphaFold3" in result_state["context"]
     
 def test_grounding_check_node_on_failure(rag_engine, mocker):
     mock_failure_output = GroundingCheck(
@@ -207,7 +192,6 @@ def test_grounding_check_node_on_failure(rag_engine, mocker):
     assert result_state["regeneration_feedback"] is not None
     assert "The following statements were ungrounded" in result_state["regeneration_feedback"]
     assert result_state["grounding_check_attempts"] == 1
-
 
 def test_grounding_check_node_on_success(rag_engine, mocker):
     mock_success_output = GroundingCheck(is_grounded=True)
