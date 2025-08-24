@@ -1068,7 +1068,7 @@ class CoreRAGEngine:
         chunks = self.text_splitter.split_documents(docs)
         self.logger.info(f"Split into {len(chunks)} chunks")
         return chunks
-
+        
     def index_documents(self, docs: List[Document], name: str, recreate: bool = False) -> None:
         self._init_or_load_vectorstore(name, recreate)
         vs = self.vectorstores.get(name)
