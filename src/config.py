@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional, Literal
 
+
 class APISettings(BaseSettings):
     """API Key Configurations"""
     openai_api_key: Optional[str] = None
@@ -62,18 +63,18 @@ class EngineSettings(BaseSettings):
     default_collection_name: str = "insight_engine_default"
     persist_directory_base: Optional[str] = None
     max_rewrite_retries: int = 1
-    max_grounding_attempts: int = 
-	default_retrieval_top_k: int = 5
-	chunking_strategy: str = "adaptive" # "adaptive", "recursive", "semantic", "hybrid
-	enable_document_type_detection: bool = True
-	semantic_chunking_threshold: str = "percentile"  # "percentile", "standard_deviation", "interquartile"
-	code_chunk_overlap: int = 50
-	academic_chunk_size: int = 800
-	financial_chunk_size: int = 1000
+    max_grounding_attempts: int = 1
+    default_retrieval_top_k: int = 5
+    chunking_strategy: str = "adaptive"  # "adaptive", "recursive", "semantic", "hybrid"
+    enable_document_type_detection: bool = True
+    semantic_chunking_threshold: str = "percentile"  # "percentile", "standard_deviation", "interquartile"
+    code_chunk_overlap: int = 50
+    academic_chunk_size: int = 800
+    financial_chunk_size: int = 1000
     enable_hybrid_search: bool = False
     hybrid_search_alpha: float = 0.7  # Weight for semantic vs keyword search
-	enable_advanced_grounding: bool = False	
-    
+    enable_advanced_grounding: bool = False
+
     model_config = SettingsConfigDict(env_prefix='', extra='ignore')
 
 
