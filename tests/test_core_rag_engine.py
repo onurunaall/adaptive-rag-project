@@ -16,7 +16,6 @@ def mock_embedding():
     return FakeEmbeddings(size=1536)
     
 @pytest.fixture(scope="module")
-@pytest.fixture(scope="module")
 def populated_rag_engine(rag_engine):
     """
     Fixture that ingests two documents into a collection named 'rag_test_data'.
