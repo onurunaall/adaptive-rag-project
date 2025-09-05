@@ -242,29 +242,77 @@ class CoreRAGEngine:
         self.logger.info("CoreRAGEngine initialized and workflow compiled.")
 
     def _get_all_documents_from_collection(self, collection_name: str) -> List[Document]:
-        """
-        Retrieve all documents from a collection for hybrid search setup
-        """
+        """Retrieve all documents with caching and memory optimization"""
+        import time
+        
+        # Check cache
+        cache_key = collection_name
+        current_time = time.time()
+        
+        if cache_key in self.document_cache:
+            if current_time - self.cache_timestamps.get(cache_key, 0) < self.cache_ttl:
+                self.logger.debug(f"Using cached documents for '{collection_name}'")
+                return self.document_cache[cache_key]
+        
         try:
             vectorstore = self.vectorstores.get(collection_name)
             if not vectorstore:
                 return []
             
-            # Get all document IDs from the collection
+            # Use pagination for large collections
+            batch_size = 1000
+            all_docs = []
+            offset = 0
+            
             collection = vectorstore._collection
-            results = collection.get()
             
-            # Convert to Document objects
-            documents = []
-            if results['documents'] and results['metadatas']:
-                for i, (content, metadata) in enumerate(zip(results['documents'], results['metadatas'])):
+            while True:
+                results = collection.get(limit=batch_size, offset=offset)
+                
+                if not results['documents']:
+                    break
+                    
+                for content, metadata in zip(results['documents'], results['metadatas'] or []):
                     doc = Document(page_content=content, metadata=metadata or {})
-                    documents.append(doc)
+                    all_docs.append(doc)
+                
+                if len(results['documents']) < batch_size:
+                    break
+                    
+                offset += batch_size
+                
+                # Clear memory periodically
+                if offset % 5000 == 0:
+                    import gc
+                    gc.collect()
             
-            return documents
+            # Update cache
+            self.document_cache[cache_key] = all_docs
+            self.cache_timestamps[cache_key] = current_time
+            
+            # Clean old cache entries
+            for key in list(self.cache_timestamps.keys()):
+                if current_time - self.cache_timestamps[key] > self.cache_ttl * 2:
+                    del self.document_cache[key]
+                    del self.cache_timestamps[key]
+            
+            return all_docs
+            
         except Exception as e:
-            self.logger.error(f"Failed to retrieve documents from collection '{collection_name}': {e}")
+            self.logger.error(f"Failed to retrieve documents from '{collection_name}': {e}")
             return []
+
+    def clear_document_cache(self, collection_name: Optional[str] = None):
+        """Clear document cache to free memory"""
+        if collection_name:
+            self.document_cache.pop(collection_name, None)
+            self.cache_timestamps.pop(collection_name, None)
+        else:
+            self.document_cache.clear()
+            self.cache_timestamps.clear()
+        
+        import gc
+        gc.collect()
         
     def _setup_logger(self) -> None:
         logger = logging.getLogger(self.__class__.__name__)
@@ -371,31 +419,6 @@ class CoreRAGEngine:
                     del self.retrievers[collection_name]
         else:
             self.logger.info(f"No persisted vector store found for '{collection_name}' at {persist_dir}. It will be created upon first indexing.")
-    
-    def _get_all_documents_from_collection(self, collection_name: str) -> List[Document]:
-        """
-        Retrieve all documents from a collection for hybrid search setup
-        """
-        try:
-            vectorstore = self.vectorstores.get(collection_name)
-            if not vectorstore:
-                return []
-            
-            # Get all document IDs from the collection
-            collection = vectorstore._collection
-            results = collection.get()
-            
-            # Convert to Document objects
-            documents = []
-            if results['documents'] and results['metadatas']:
-                for i, (content, metadata) in enumerate(zip(results['documents'], results['metadatas'])):
-                    doc = Document(page_content=content, metadata=metadata or {})
-                    documents.append(doc)
-            
-            return documents
-        except Exception as e:
-            self.logger.error(f"Failed to retrieve documents from collection '{collection_name}': {e}")
-            return []
     
     def _init_llm(self, use_json_format: bool) -> Any:
         provider = self.llm_provider.lower()
@@ -670,7 +693,7 @@ class CoreRAGEngine:
         chain = prompt | self.json_llm | parser
         return chain
 
-    def _grounding_check_node(self, state: CoreGraphState) -> CoreGraphState:
+    async def _grounding_check_node(self, state: CoreGraphState) -> CoreGraphState:
         self.logger.info("NODE: Performing grounding check on generated answer...")
         context = state.get("context", "")
         generation = state.get("generation", "")
@@ -692,11 +715,10 @@ class CoreRAGEngine:
                 
                 try:
                     # Run advanced grounding check
-                    advanced_results = asyncio.run(
-                        self.advanced_grounding_checker.perform_comprehensive_grounding_check(answer=generation,
-                                                                                              context=context,
-                                                                                              question=question,
-                                                                                              documents=documents))
+                    advanced_results = await self.advanced_grounding_checker.perform_comprehensive_grounding_check(answer=generation,
+                                                                                                                   context=context,
+                                                                                                                   question=question,
+                                                                                                                   documents=documents)
                     
                     # Process advanced results
                     overall_assessment = advanced_results.get("overall_assessment", {})
