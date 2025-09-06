@@ -1,25 +1,170 @@
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 import hashlib
 from pathlib import Path
 import json
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Set
 import mimetypes
 import os
+import asyncio
+from threading import Thread
+import queue
+
+# Import watchdog for efficient file monitoring
+try:
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler, FileSystemEvent
+    WATCHDOG_AVAILABLE = True
+except ImportError:
+    WATCHDOG_AVAILABLE = False
+    print("Warning: watchdog not installed. Using polling fallback.")
 
 mcp = FastMCP("FileSystemRAG")
 
-# Cache for file tracking
+# Global state for file tracking
 file_cache = {}
+deleted_files_queue = queue.Queue()
+modified_files_queue = queue.Queue()
+new_files_queue = queue.Queue()
+
+class MCPFileHandler(FileSystemEventHandler):
+    """Watchdog event handler for file system changes"""
+    
+    def __init__(self, file_types: Set[str]):
+        self.file_types = file_types
+        
+    def _is_relevant_file(self, path: str) -> bool:
+        """Check if file type is relevant"""
+        return any(path.endswith(f'.{ext}') for ext in self.file_types)
+    
+    def on_created(self, event: FileSystemEvent):
+        if not event.is_directory and self._is_relevant_file(event.src_path):
+            new_files_queue.put(event.src_path)
+    
+    def on_modified(self, event: FileSystemEvent):
+        if not event.is_directory and self._is_relevant_file(event.src_path):
+            modified_files_queue.put(event.src_path)
+    
+    def on_deleted(self, event: FileSystemEvent):
+        if not event.is_directory and self._is_relevant_file(event.src_path):
+            deleted_files_queue.put(event.src_path)
+    
+    def on_moved(self, event: FileSystemEvent):
+        if not event.is_directory:
+            if self._is_relevant_file(event.src_path):
+                deleted_files_queue.put(event.src_path)
+            if self._is_relevant_file(event.dest_path):
+                new_files_queue.put(event.dest_path)
+
+# Active observers for different directories
+active_observers = {}
+
+@mcp.tool()
+async def start_monitoring(path: str, file_types: list[str] = None) -> dict:
+    """
+    Start real-time monitoring of a directory using watchdog.
+    
+    Args:
+        path: Directory path to monitor
+        file_types: List of file extensions to track
+    
+    Returns:
+        Status of monitoring initialization
+    """
+    if not WATCHDOG_AVAILABLE:
+        return {"error": "watchdog library not installed. Install with: pip install watchdog"}
+    
+    file_types = file_types or ['pdf', 'txt', 'md', 'docx', 'html']
+    
+    try:
+        path_obj = Path(path)
+        if not path_obj.exists():
+            return {"error": f"Path does not exist: {path}"}
+        
+        # Stop existing observer for this path if any
+        if path in active_observers:
+            active_observers[path].stop()
+            active_observers[path].join()
+        
+        # Create and start new observer
+        event_handler = MCPFileHandler(set(file_types))
+        observer = Observer()
+        observer.schedule(event_handler, str(path_obj), recursive=True)
+        observer.start()
+        
+        active_observers[path] = observer
+        
+        return {
+            "success": True,
+            "message": f"Started monitoring {path}",
+            "file_types": file_types
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+@mcp.tool()
+async def stop_monitoring(path: str) -> dict:
+    """Stop monitoring a directory."""
+    if path in active_observers:
+        active_observers[path].stop()
+        active_observers[path].join()
+        del active_observers[path]
+        return {"success": True, "message": f"Stopped monitoring {path}"}
+    return {"error": f"No active monitoring for {path}"}
+
+@mcp.tool()
+async def get_file_changes() -> dict:
+    """
+    Get accumulated file changes since last check.
+    
+    Returns:
+        Dictionary with new, modified, and deleted files
+    """
+    new_files = []
+    modified_files = []
+    deleted_files = []
+    
+    # Collect all changes from queues
+    while not new_files_queue.empty():
+        try:
+            new_files.append(new_files_queue.get_nowait())
+        except queue.Empty:
+            break
+    
+    while not modified_files_queue.empty():
+        try:
+            modified_files.append(modified_files_queue.get_nowait())
+        except queue.Empty:
+            break
+    
+    while not deleted_files_queue.empty():
+        try:
+            deleted_files.append(deleted_files_queue.get_nowait())
+        except queue.Empty:
+            break
+    
+    # Remove duplicates
+    new_files = list(set(new_files))
+    modified_files = list(set(modified_files))
+    deleted_files = list(set(deleted_files))
+    
+    return {
+        "new_files": new_files,
+        "modified_files": modified_files,
+        "deleted_files": deleted_files,
+        "has_changes": bool(new_files or modified_files or deleted_files)
+    }
 
 @mcp.tool()
 async def monitor_directory(path: str, file_types: list[str] = None, recursive: bool = True) -> dict:
     """
-    Monitor directory for documents and track changes.
+    Fallback polling-based monitoring for compatibility.
+    Also provides initial scan of directory.
     
     Args:
         path: Directory path to monitor
-        file_types: List of file extensions to track (e.g., ['pdf', 'txt', 'md'])
+        file_types: List of file extensions to track
         recursive: Whether to search subdirectories
     
     Returns:
@@ -33,7 +178,7 @@ async def monitor_directory(path: str, file_types: list[str] = None, recursive: 
         if not path_obj.exists():
             return {"error": f"Path does not exist: {path}"}
         
-        files = []
+        current_files = {}
         pattern = "**/*" if recursive else "*"
         
         for ext in file_types:
@@ -44,51 +189,49 @@ async def monitor_directory(path: str, file_types: list[str] = None, recursive: 
                         f"{file_path}_{stat.st_mtime}_{stat.st_size}".encode()
                     ).hexdigest()
                     
-                    files.append({
+                    current_files[str(file_path)] = {
                         "path": str(file_path),
                         "name": file_path.name,
                         "extension": file_path.suffix,
                         "size": stat.st_size,
                         "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
                         "hash": file_hash
-                    })
+                    }
         
-        # Detect changes
-        directory_hash = hashlib.md5(
-            json.dumps(sorted([f["hash"] for f in files])).encode()
-        ).hexdigest()
-        
-        previous_hash = file_cache.get(path, {}).get("hash")
-        has_changes = previous_hash != directory_hash if previous_hash else True
-        
-        # Find new and modified files
+        # Compare with cache to detect changes
         new_files = []
         modified_files = []
+        deleted_files = []
         
         if path in file_cache:
-            previous_files = {f["path"]: f["hash"] for f in file_cache[path].get("files", [])}
+            previous_files = file_cache[path]
             
-            for file in files:
-                if file["path"] not in previous_files:
-                    new_files.append(file["path"])
-                elif previous_files[file["path"]] != file["hash"]:
-                    modified_files.append(file["path"])
+            # Find new and modified files
+            for file_path, file_info in current_files.items():
+                if file_path not in previous_files:
+                    new_files.append(file_path)
+                elif previous_files[file_path]["hash"] != file_info["hash"]:
+                    modified_files.append(file_path)
+            
+            # Find deleted files
+            for file_path in previous_files:
+                if file_path not in current_files:
+                    deleted_files.append(file_path)
+        else:
+            # First scan - all files are new
+            new_files = list(current_files.keys())
         
         # Update cache
-        file_cache[path] = {
-            "hash": directory_hash,
-            "files": files,
-            "last_check": datetime.now().isoformat()
-        }
+        file_cache[path] = current_files
         
         return {
             "path": path,
-            "total_files": len(files),
-            "files": files,
-            "has_changes": has_changes,
+            "total_files": len(current_files),
+            "files": list(current_files.values()),
+            "has_changes": bool(new_files or modified_files or deleted_files),
             "new_files": new_files,
             "modified_files": modified_files,
-            "directory_hash": directory_hash
+            "deleted_files": deleted_files
         }
         
     except Exception as e:
@@ -228,5 +371,15 @@ def _format_bytes(bytes: int) -> str:
         bytes /= 1024.0
     return f"{bytes:.2f} TB"
 
+# Cleanup function
+def cleanup():
+    """Stop all active observers on shutdown."""
+    for path, observer in active_observers.items():
+        observer.stop()
+        observer.join()
+
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    try:
+        mcp.run(transport="stdio")
+    finally:
+        cleanup()
