@@ -1,248 +1,573 @@
-from langchain_mcp_adapters.client import MultiServerMCPClient
-from langchain.tools import BaseTool, Tool
+# src/mcp/sql_server.py
+"""
+MCP Server for SQL database integration with RAG
+Includes security fixes for SQL injection prevention
+"""
+from fastmcp import FastMCP
+import sqlite3
+import json
 from typing import List, Dict, Any, Optional
-import asyncio
-from datetime import datetime
-import logging
 from pathlib import Path
-from langchain.schema import Document
-import numpy as np
-from src.config import settings as app_settings
+from datetime import datetime
+import re
 
-class MCPEnhancedRAG:
+mcp = FastMCP("SQLRAG")
+
+# Database connection pool
+db_connections = {}
+
+# Allowed SQL operations for safety
+ALLOWED_SQL_KEYWORDS = {'SELECT', 'FROM', 'WHERE', 'JOIN', 'LEFT', 'RIGHT', 'INNER', 
+                        'ON', 'AND', 'OR', 'ORDER', 'BY', 'GROUP', 'HAVING', 
+                        'LIMIT', 'OFFSET', 'AS', 'COUNT', 'SUM', 'AVG', 'MAX', 'MIN'}
+
+def validate_table_name(cursor, table_name: str) -> bool:
+    """Validate that a table name exists in the database."""
+    cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?", 
+        (table_name,)
+    )
+    return cursor.fetchone() is not None
+
+def validate_column_names(cursor, table_name: str, column_names: List[str]) -> bool:
+    """Validate that column names exist in the specified table."""
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    valid_columns = {col[1] for col in cursor.fetchall()}
+    return all(col in valid_columns for col in column_names)
+
+@mcp.tool()
+async def query_structured_data(
+    query: str, 
+    db_path: str,
+    max_rows: int = 100,
+    validate_query: bool = True
+) -> dict:
     """
-    Enhanced RAG system with MCP integration for:
-    - Real-time document monitoring and ingestion
-    - Conversation memory management with embeddings
-    - SQL database integration
-    - Robust error handling
+    Execute SQL query with security validation.
+    
+    Args:
+        query: SQL query to execute
+        db_path: Path to SQLite database
+        max_rows: Maximum number of rows to return
+        validate_query: Whether to validate query for safety
+    
+    Returns:
+        Query results with column names
     """
+    try:
+        # Basic SQL injection prevention
+        if validate_query:
+            query_upper = query.upper().strip()
+            
+            # Only allow SELECT queries
+            if not query_upper.startswith('SELECT'):
+                return {
+                    "success": False,
+                    "error": "Only SELECT queries are allowed"
+                }
+            
+            # Check for dangerous keywords
+            dangerous_keywords = ['DROP', 'DELETE', 'INSERT', 'UPDATE', 'ALTER', 'CREATE', 'EXEC', 'EXECUTE']
+            for keyword in dangerous_keywords:
+                if keyword in query_upper:
+                    return {
+                        "success": False,
+                        "error": f"Query contains forbidden keyword: {keyword}"
+                    }
+        
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Execute query with LIMIT to prevent excessive data retrieval
+        if 'LIMIT' not in query.upper():
+            query = f"{query} LIMIT {max_rows}"
+        
+        cursor.execute(query)
+        
+        # Fetch results
+        rows = cursor.fetchall()
+        
+        if rows:
+            # Convert to list of dicts
+            results = [dict(row) for row in rows]
+            columns = list(results[0].keys()) if results else []
+        else:
+            results = []
+            columns = []
+        
+        conn.close()
+        
+        return {
+            "success": True,
+            "query": query,
+            "results": results,
+            "columns": columns,
+            "row_count": len(results),
+            "truncated": len(results) == max_rows
+        }
+        
+    except sqlite3.Error as e:
+        return {
+            "success": False,
+            "error": f"SQL Error: {str(e)}",
+            "query": query
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+@mcp.tool()
+async def get_database_schema(db_path: str) -> dict:
+    """
+    Get complete database schema for better query generation.
     
-    def __init__(
-        self, 
-        core_rag_engine, 
-        mcp_config: Dict[str, Any] = None,
-        enable_filesystem: bool = True,
-        enable_memory: bool = True,
-        enable_sql: bool = True
-    ):
-        """
-        Initialize MCP-enhanced RAG system.
+    Args:
+        db_path: Path to SQLite database
+    
+    Returns:
+        Database schema information
+    """
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
         
-        Args:
-            core_rag_engine: Instance of CoreRAGEngine
-            mcp_config: Configuration for MCP servers
-            enable_filesystem: Whether to enable filesystem MCP
-            enable_memory: Whether to enable memory MCP
-            enable_sql: Whether to enable SQL MCP
-        """
-        self.rag = core_rag_engine
-        self.mcp_client = None
-        self.tools: Dict[str, BaseTool] = {}
-        self.logger = logging.getLogger(__name__)
+        # Get all tables
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [row[0] for row in cursor.fetchall()]
         
-        # Build MCP configuration based on enabled features
-        self.mcp_config = mcp_config or {}
+        schema = {"tables": {}}
         
-        if enable_filesystem:
-            self.mcp_config["filesystem"] = {
-                "command": getattr(app_settings.mcp, 'filesystem_command', 'python'),
-                "args": getattr(app_settings.mcp, 'filesystem_args', ["src/mcp/filesystem_server.py"]),
-                "transport": getattr(app_settings.mcp, 'filesystem_transport', "stdio")
+        for table in tables:
+            # Validate table name (already from sqlite_master, so safe)
+            # Get table info using parameterized query where possible
+            cursor.execute(f"PRAGMA table_info({table})")
+            columns = cursor.fetchall()
+            
+            # Get row count safely
+            cursor.execute(f"SELECT COUNT(*) FROM {table}")
+            row_count = cursor.fetchone()[0]
+            
+            # Get indexes
+            cursor.execute(f"PRAGMA index_list({table})")
+            indexes = [row[1] for row in cursor.fetchall()]
+            
+            # Get foreign keys
+            cursor.execute(f"PRAGMA foreign_key_list({table})")
+            foreign_keys = [
+                {"column": row[3], "ref_table": row[2], "ref_column": row[4]}
+                for row in cursor.fetchall()
+            ]
+            
+            schema["tables"][table] = {
+                "columns": [
+                    {
+                        "name": col[1],
+                        "type": col[2],
+                        "nullable": not col[3],
+                        "default": col[4],
+                        "primary_key": bool(col[5])
+                    }
+                    for col in columns
+                ],
+                "row_count": row_count,
+                "indexes": indexes,
+                "foreign_keys": foreign_keys
             }
         
-        if enable_memory:
-            self.mcp_config["memory"] = {
-                "command": getattr(app_settings.mcp, 'memory_command', 'python'),
-                "args": getattr(app_settings.mcp, 'memory_args', ["src/mcp/memory_server.py"]),
-                "transport": getattr(app_settings.mcp, 'memory_transport', "stdio")
+        conn.close()
+        
+        return {
+            "success": True,
+            "database": db_path,
+            "schema": schema,
+            "table_count": len(tables)
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+@mcp.tool()
+async def get_table_sample(
+    db_path: str,
+    table_name: str,
+    sample_size: int = 5
+) -> dict:
+    """
+    Get sample rows from a table with validation.
+    
+    Args:
+        db_path: Path to SQLite database
+        table_name: Name of the table
+        sample_size: Number of sample rows
+    
+    Returns:
+        Sample data from the table
+    """
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Validate table name
+        if not validate_table_name(cursor, table_name):
+            conn.close()
+            return {
+                "success": False,
+                "error": f"Table '{table_name}' does not exist"
             }
         
-        if enable_sql:
-            self.mcp_config["sql"] = {
-                "command": getattr(app_settings.mcp, 'sql_command', 'python'),
-                "args": getattr(app_settings.mcp, 'sql_args', ["src/mcp/sql_server.py"]),
-                "transport": getattr(app_settings.mcp, 'sql_transport', "stdio")
+        # Safe query since table name is validated
+        query = f"SELECT * FROM {table_name} LIMIT ?"
+        cursor.execute(query, (sample_size,))
+        
+        rows = cursor.fetchall()
+        
+        # Get column names
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [col[1] for col in cursor.fetchall()]
+        
+        # Convert to list of dicts
+        results = []
+        for row in rows:
+            results.append(dict(zip(columns, row)))
+        
+        conn.close()
+        
+        return {
+            "success": True,
+            "table": table_name,
+            "sample_data": results,
+            "columns": columns
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+@mcp.tool()
+async def natural_language_to_sql(
+    question: str,
+    db_path: str,
+    context: Optional[str] = None,
+    use_llm: bool = False,
+    llm_model: Optional[str] = None
+) -> dict:
+    """
+    Convert natural language to SQL with improved pattern matching.
+    For production, integrate with LLM for better conversion.
+    
+    Args:
+        question: Natural language question
+        db_path: Path to database
+        context: Additional context for query generation
+        use_llm: Whether to use LLM for conversion (requires setup)
+        llm_model: LLM model to use
+    
+    Returns:
+        Generated SQL query and explanation
+    """
+    try:
+        # Get schema first
+        schema_result = await get_database_schema(db_path)
+        
+        if not schema_result["success"]:
+            return schema_result
+        
+        schema = schema_result["schema"]
+        
+        if not schema["tables"]:
+            return {
+                "success": False,
+                "error": "No tables found in database"
             }
         
-        # State for monitoring
-        self.monitoring_active = False
-        self.monitoring_tasks = {}
-        self.deleted_files_handler = None
-    
-    async def initialize_mcp_servers(self) -> bool:
-        """Initialize and connect to MCP servers with error handling."""
-        try:
-            if not self.mcp_config:
-                self.logger.warning("No MCP servers configured")
-                return False
-            
-            self.logger.info(f"Initializing {len(self.mcp_config)} MCP servers...")
-            
-            self.mcp_client = MultiServerMCPClient(self.mcp_config)
-            
-            # Get tools from all servers
-            tools = await self.mcp_client.get_tools()
-            
-            # Store tools by name for easy access
-            for tool in tools:
-                self.tools[tool.name] = tool
-            
-            self.logger.info(f"Successfully loaded {len(self.tools)} MCP tools")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Failed to initialize MCP servers: {e}")
-            return False
-    
-    def set_deleted_files_handler(self, handler):
-        """
-        Set a custom handler for deleted files.
+        question_lower = question.lower()
         
-        Args:
-            handler: Callable that takes a list of deleted file paths
-        """
-        self.deleted_files_handler = handler
-    
-    async def auto_ingest_with_monitoring(
-        self, 
-        watch_dir: str,
-        collection_name: str = "auto_ingested",
-        file_types: List[str] = None,
-        poll_interval: int = 10,
-        use_watchdog: bool = True
-    ):
-        """
-        Monitor directory and auto-ingest new or modified documents.
-        Handles deleted files properly.
+        # Find relevant table based on question keywords
+        relevant_table = None
+        relevant_score = 0
         
-        Args:
-            watch_dir: Directory to monitor
-            collection_name: Collection to store documents
-            file_types: File types to monitor
-            poll_interval: Seconds between checks (for polling mode)
-            use_watchdog: Whether to use watchdog for real-time monitoring
-        """
-        if not self.tools.get("monitor_directory"):
-            error_msg = "Filesystem MCP server not available"
-            self.logger.error(error_msg)
-            raise RuntimeError(error_msg)
+        for table_name in schema["tables"].keys():
+            table_lower = table_name.lower()
+            # Score based on matching words
+            score = 0
+            if table_lower in question_lower:
+                score += 10
+            
+            # Check column names
+            for col in schema["tables"][table_name]["columns"]:
+                if col["name"].lower() in question_lower:
+                    score += 5
+            
+            if score > relevant_score:
+                relevant_score = score
+                relevant_table = table_name
         
-        self.monitoring_active = True
-        file_types = file_types or ["pdf", "txt", "md", "docx"]
+        if not relevant_table:
+            relevant_table = list(schema["tables"].keys())[0]
         
-        self.logger.info(f"Starting auto-ingestion monitoring for {watch_dir}")
+        # Extract conditions and operations
+        columns = schema["tables"][relevant_table]["columns"]
+        column_names = [col["name"] for col in columns]
         
-        # Try to start real-time monitoring with watchdog
-        if use_watchdog and self.tools.get("start_monitoring"):
-            try:
-                result = await self.tools["start_monitoring"].ainvoke({
-                    "path": watch_dir,
-                    "file_types": file_types
-                })
+        # Build SQL based on patterns
+        sql = None
+        explanation = None
+        
+        # COUNT patterns
+        if any(word in question_lower for word in ["count", "how many", "number of", "total"]):
+            if "group by" in question_lower or "per" in question_lower or "by" in question_lower:
+                # Try to find grouping column
+                group_col = None
+                for col in column_names:
+                    if col.lower() in question_lower and col.lower() not in ["id", "created", "updated"]:
+                        group_col = col
+                        break
                 
-                if result.get("success"):
-                    self.logger.info("Started real-time monitoring with watchdog")
-                    use_watchdog = True
+                if group_col:
+                    sql = f"SELECT {group_col}, COUNT(*) as count FROM {relevant_table} GROUP BY {group_col}"
+                    explanation = f"Counting rows grouped by {group_col}"
                 else:
-                    self.logger.warning("Failed to start watchdog, falling back to polling")
-                    use_watchdog = False
-            except Exception as e:
-                self.logger.warning(f"Watchdog not available: {e}, using polling")
-                use_watchdog = False
+                    sql = f"SELECT COUNT(*) as total_count FROM {relevant_table}"
+                    explanation = f"Counting total rows in {relevant_table}"
+            else:
+                sql = f"SELECT COUNT(*) as total_count FROM {relevant_table}"
+                explanation = f"Counting total rows in {relevant_table}"
         
-        # Monitoring loop
-        while self.monitoring_active:
-            try:
-                if use_watchdog and self.tools.get("get_file_changes"):
-                    # Get changes from watchdog
-                    changes = await self.tools["get_file_changes"].ainvoke({})
-                else:
-                    # Use polling fallback
-                    changes = await self.tools["monitor_directory"].ainvoke({
-                        "path": watch_dir,
-                        "file_types": file_types,
-                        "recursive": True
-                    })
-                
-                if changes.get("has_changes") or changes.get("new_files") or changes.get("modified_files"):
-                    # Process new files
-                    for file_path in changes.get("new_files", []):
-                        try:
-                            self.logger.info(f"Ingesting new file: {file_path}")
-                            
-                            # Get metadata
-                            metadata = await self.tools["get_file_metadata"].ainvoke({
-                                "filepath": file_path
-                            })
-                            
-                            if "error" in metadata:
-                                self.logger.error(f"Failed to get metadata for {file_path}: {metadata['error']}")
-                                continue
-                            
-                            # Ingest based on file type
-                            if file_path.endswith('.pdf'):
-                                source_type = "pdf_path"
-                            elif file_path.endswith(('.txt', '.md')):
-                                source_type = "text_path"
-                            else:
-                                continue
-                            
-                            self.rag.ingest(
-                                sources=[{"type": source_type, "value": file_path}],
-                                collection_name=collection_name,
-                                recreate_collection=False
-                            )
-                            
-                        except Exception as e:
-                            self.logger.error(f"Failed to ingest {file_path}: {e}")
-                    
-                    # Process modified files
-                    for file_path in changes.get("modified_files", []):
-                        try:
-                            self.logger.info(f"Re-ingesting modified file: {file_path}")
-                            
-                            if file_path.endswith('.pdf'):
-                                source_type = "pdf_path"
-                            elif file_path.endswith(('.txt', '.md')):
-                                source_type = "text_path"
-                            else:
-                                continue
-                            
-                            # TODO: Remove old version from vector store first
-                            self.rag.ingest(
-                                sources=[{"type": source_type, "value": file_path}],
-                                collection_name=collection_name,
-                                recreate_collection=False
-                            )
-                            
-                        except Exception as e:
-                            self.logger.error(f"Failed to re-ingest {file_path}: {e}")
-                    
-                    # Handle deleted files
-                    deleted_files = changes.get("deleted_files", [])
-                    if deleted_files:
-                        self.logger.info(f"Detected {len(deleted_files)} deleted files")
-                        
-                        if self.deleted_files_handler:
-                            try:
-                                await self.deleted_files_handler(deleted_files, collection_name)
-                            except Exception as e:
-                                self.logger.error(f"Failed to handle deleted files: {e}")
-                        else:
-                            self.logger.warning("No handler configured for deleted files")
-                
-                await asyncio.sleep(poll_interval)
-                
-            except Exception as e:
-                self.logger.error(f"Error in monitoring loop: {e}")
-                await asyncio.sleep(poll_interval)
+        # AVERAGE/SUM/MAX/MIN patterns
+        elif any(word in question_lower for word in ["average", "avg", "mean"]):
+            numeric_cols = [col["name"] for col in columns if "INT" in col["type"] or "REAL" in col["type"]]
+            if numeric_cols:
+                col = numeric_cols[0]
+                sql = f"SELECT AVG({col}) as average_{col} FROM {relevant_table}"
+                explanation = f"Calculating average of {col}"
+        
+        elif any(word in question_lower for word in ["sum", "total"]):
+            numeric_cols = [col["name"] for col in columns if "INT" in col["type"] or "REAL" in col["type"]]
+            if numeric_cols:
+                col = numeric_cols[0]
+                sql = f"SELECT SUM({col}) as total_{col} FROM {relevant_table}"
+                explanation = f"Calculating sum of {col}"
+        
+        elif any(word in question_lower for word in ["maximum", "max", "highest", "largest"]):
+            numeric_cols = [col["name"] for col in columns if "INT" in col["type"] or "REAL" in col["type"]]
+            if numeric_cols:
+                col = numeric_cols[0]
+                sql = f"SELECT MAX({col}) as max_{col}, * FROM {relevant_table} ORDER BY {col} DESC LIMIT 1"
+                explanation = f"Finding maximum {col} value"
+        
+        elif any(word in question_lower for word in ["minimum", "min", "lowest", "smallest"]):
+            numeric_cols = [col["name"] for col in columns if "INT" in col["type"] or "REAL" in col["type"]]
+            if numeric_cols:
+                col = numeric_cols[0]
+                sql = f"SELECT MIN({col}) as min_{col}, * FROM {relevant_table} ORDER BY {col} ASC LIMIT 1"
+                explanation = f"Finding minimum {col} value"
+        
+        # TIME-based patterns
+        elif any(word in question_lower for word in ["latest", "recent", "newest", "last"]):
+            date_cols = [col["name"] for col in columns 
+                        if any(t in col["name"].lower() for t in ["date", "time", "created", "updated", "timestamp"])]
+            if date_cols:
+                date_col = date_cols[0]
+                sql = f"SELECT * FROM {relevant_table} ORDER BY {date_col} DESC LIMIT 10"
+                explanation = f"Getting latest records ordered by {date_col}"
+            else:
+                sql = f"SELECT * FROM {relevant_table} LIMIT 10"
+                explanation = f"Getting sample records from {relevant_table}"
+        
+        elif any(word in question_lower for word in ["oldest", "earliest", "first"]):
+            date_cols = [col["name"] for col in columns 
+                        if any(t in col["name"].lower() for t in ["date", "time", "created", "updated", "timestamp"])]
+            if date_cols:
+                date_col = date_cols[0]
+                sql = f"SELECT * FROM {relevant_table} ORDER BY {date_col} ASC LIMIT 10"
+                explanation = f"Getting oldest records ordered by {date_col}"
+        
+        # FILTER patterns
+        elif "where" in question_lower or "filter" in question_lower or "only" in question_lower:
+            # Try to extract filter conditions
+            sql = f"SELECT * FROM {relevant_table} WHERE 1=1 LIMIT 20"
+            explanation = f"Filtered query on {relevant_table} (add specific conditions)"
+        
+        # Default: SELECT all with limit
+        else:
+            sql = f"SELECT * FROM {relevant_table} LIMIT 20"
+            explanation = f"Getting sample data from {relevant_table}"
+        
+        return {
+            "success": True,
+            "question": question,
+            "generated_sql": sql,
+            "explanation": explanation,
+            "table_used": relevant_table,
+            "available_columns": column_names,
+            "note": "For production use, integrate with LLM for better SQL generation"
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+@mcp.tool()
+async def create_rag_context_from_db(
+    db_path: str,
+    tables: List[str] = None,
+    include_schema: bool = True,
+    include_sample: bool = True,
+    sample_size: int = 3
+) -> dict:
+    """
+    Create comprehensive context from database for RAG.
     
-    async def rag_with_memory(
-        self,
-        question: str,
-        session_id: str,
-        collection_name: Optional[str] = None,
-        use_memory_context: bool = True,
-        store_conversation: bool = True,
-        use_embeddings:
+    Args:
+        db_path: Path to database
+        tables: Specific tables to include (None for all)
+        include_schema: Whether to include schema information
+        include_sample: Whether to include sample data
+        sample_size: Number of sample rows per table
+    
+    Returns:
+        Structured context for RAG ingestion
+    """
+    try:
+        context_data = {
+            "database": db_path,
+            "timestamp": datetime.now().isoformat(),
+            "tables": {}
+        }
+        
+        # Get schema
+        schema_result = await get_database_schema(db_path)
+        if not schema_result["success"]:
+            return schema_result
+        
+        schema = schema_result["schema"]
+        
+        # Filter tables if specified
+        tables_to_process = tables if tables else list(schema["tables"].keys())
+        
+        # Validate requested tables exist
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        for table_name in tables_to_process:
+            if not validate_table_name(cursor, table_name):
+                conn.close()
+                return {
+                    "success": False,
+                    "error": f"Table '{table_name}' does not exist"
+                }
+        
+        conn.close()
+        
+        for table_name in tables_to_process:
+            if table_name not in schema["tables"]:
+                continue
+            
+            table_context = {
+                "name": table_name,
+                "row_count": schema["tables"][table_name]["row_count"]
+            }
+            
+            if include_schema:
+                table_context["schema"] = schema["tables"][table_name]
+            
+            if include_sample and schema["tables"][table_name]["row_count"] > 0:
+                sample_result = await get_table_sample(db_path, table_name, sample_size)
+                if sample_result["success"]:
+                    table_context["sample_data"] = sample_result["sample_data"]
+            
+            context_data["tables"][table_name] = table_context
+        
+        # Generate text summary for RAG
+        text_summary = f"Database: {db_path}\n"
+        text_summary += f"Tables: {len(context_data['tables'])}\n\n"
+        
+        for table_name, table_info in context_data["tables"].items():
+            text_summary += f"Table: {table_name}\n"
+            text_summary += f"Rows: {table_info['row_count']}\n"
+            
+            if "schema" in table_info:
+                text_summary += "Columns:\n"
+                for col in table_info["schema"]["columns"]:
+                    pk = " (PRIMARY KEY)" if col.get("primary_key") else ""
+                    text_summary += f"  - {col['name']} ({col['type']}){pk}\n"
+                
+                if table_info["schema"].get("foreign_keys"):
+                    text_summary += "Foreign Keys:\n"
+                    for fk in table_info["schema"]["foreign_keys"]:
+                        text_summary += f"  - {fk['column']} -> {fk['ref_table']}.{fk['ref_column']}\n"
+            
+            if "sample_data" in table_info and table_info["sample_data"]:
+                text_summary += f"Sample data (first row): {table_info['sample_data'][0]}\n"
+            
+            text_summary += "\n"
+        
+        return {
+            "success": True,
+            "context_data": context_data,
+            "text_summary": text_summary,
+            "table_count": len(context_data["tables"])
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+@mcp.tool()
+async def execute_batch_queries(
+    queries: List[str],
+    db_path: str,
+    stop_on_error: bool = False
+) -> dict:
+    """
+    Execute multiple SQL queries in sequence with validation.
+    
+    Args:
+        queries: List of SQL queries
+        db_path: Path to database
+        stop_on_error: Whether to stop execution on first error
+    
+    Returns:
+        Results of all queries
+    """
+    try:
+        results = []
+        
+        for i, query in enumerate(queries):
+            result = await query_structured_data(query, db_path, validate_query=True)
+            result["query_index"] = i
+            results.append(result)
+            
+            if not result["success"] and stop_on_error:
+                break
+        
+        success_count = sum(1 for r in results if r.get("success"))
+        
+        return {
+            "success": True,
+            "total_queries": len(queries),
+            "successful_queries": success_count,
+            "failed_queries": len(queries) - success_count,
+            "results": results
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")
