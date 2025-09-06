@@ -1,7 +1,3 @@
-# src/mcp/filesystem_server.py
-"""
-MCP Server for filesystem monitoring and document management
-"""
 from mcp.server.fastmcp import FastMCP
 import hashlib
 from pathlib import Path
