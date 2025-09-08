@@ -1,8 +1,3 @@
-# src/mcp_rag_integration.py
-"""
-Main integration module for MCP-enhanced RAG system
-Fixed with proper error handling and configuration management
-"""
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain.tools import BaseTool, Tool
 from typing import List, Dict, Any, Optional
@@ -13,6 +8,8 @@ from pathlib import Path
 from langchain.schema import Document
 import numpy as np
 from src.config import settings as app_settings
+
+PROJECT_ROOT = Path(__file__).parent.parent
 
 class MCPEnhancedRAG:
     """
@@ -46,27 +43,31 @@ class MCPEnhancedRAG:
         self.tools: Dict[str, BaseTool] = {}
         self.logger = logging.getLogger(__name__)
         
+        filesystem_args: list[str] = [str(PROJECT_ROOT / "mcp" / "filesystem_server.py")]
+        memory_args: list[str] = [str(PROJECT_ROOT / "mcp" / "memory_server.py")]
+        sql_args: list[str] = [str(PROJECT_ROOT / "mcp" / "sql_server.py")]
+
         # Build MCP configuration based on enabled features
         self.mcp_config = mcp_config or {}
         
         if enable_filesystem:
             self.mcp_config["filesystem"] = {
                 "command": getattr(app_settings.mcp, 'filesystem_command', 'python'),
-                "args": getattr(app_settings.mcp, 'filesystem_args', ["src/mcp/filesystem_server.py"]),
+                "args": getattr(app_settings.mcp, 'filesystem_args', [filesystem_args]),
                 "transport": getattr(app_settings.mcp, 'filesystem_transport', "stdio")
             }
         
         if enable_memory:
             self.mcp_config["memory"] = {
                 "command": getattr(app_settings.mcp, 'memory_command', 'python'),
-                "args": getattr(app_settings.mcp, 'memory_args', ["src/mcp/memory_server.py"]),
+                "args": getattr(app_settings.mcp, 'memory_args', [memory_args]),
                 "transport": getattr(app_settings.mcp, 'memory_transport', "stdio")
             }
         
         if enable_sql:
             self.mcp_config["sql"] = {
                 "command": getattr(app_settings.mcp, 'sql_command', 'python'),
-                "args": getattr(app_settings.mcp, 'sql_args', ["src/mcp/sql_server.py"]),
+                "args": getattr(app_settings.mcp, 'sql_args', [sql_args]),
                 "transport": getattr(app_settings.mcp, 'sql_transport', "stdio")
             }
         
@@ -87,7 +88,7 @@ class MCPEnhancedRAG:
             self.mcp_client = MultiServerMCPClient(self.mcp_config)
             
             # Get tools from all servers
-            tools = await self.mcp_client.get_tools()
+            tools = await asyncio.wait_for(self.mcp_client.get_tools(), timeout=30.0)
             
             # Store tools by name for easy access
             for tool in tools:
@@ -96,6 +97,9 @@ class MCPEnhancedRAG:
             self.logger.info(f"Successfully loaded {len(self.tools)} MCP tools")
             return True
             
+        except asyncio.TimeoutError:
+            self.logger.error("MCP server initialization timed out")
+            return False
         except Exception as e:
             self.logger.error(f"Failed to initialize MCP servers: {e}")
             return False

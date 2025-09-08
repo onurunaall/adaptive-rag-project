@@ -86,6 +86,21 @@ class AgentSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix='', extra='ignore')
 
+class MCPSettings(BaseSettings):
+    """MCP Server Configurations"""
+    filesystem_command: str = "python"
+    filesystem_args: list[str] = ["mcp/filesystem_server.py"]
+    filesystem_transport: str = "stdio"
+    
+    memory_command: str = "python"
+    memory_args: list[str] = ["mcp/memory_server.py"]
+    memory_transport: str = "stdio"
+    
+    sql_command: str = "python"
+    sql_args: list[str] = ["mcp/sql_server.py"]
+    sql_transport: str = "stdio"
+
+    model_config = SettingsConfigDict(env_prefix='MCP_', extra='ignore')
 
 class AppSettings(BaseSettings):
     """Overall Application Settings"""
@@ -94,8 +109,8 @@ class AppSettings(BaseSettings):
     embedding: EmbeddingSettings = EmbeddingSettings()
     engine: EngineSettings = EngineSettings()
     agent: AgentSettings = AgentSettings()
+    mcp: MCPSettings = MCPSettings()
 
     model_config = SettingsConfigDict(env_file='.env', env_nested_delimiter='__', extra='ignore')
-
 
 settings = AppSettings()

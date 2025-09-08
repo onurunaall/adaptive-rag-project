@@ -1,4 +1,4 @@
-from fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP
 import hashlib
 from pathlib import Path
 import json
@@ -10,7 +10,6 @@ import asyncio
 from threading import Thread
 import queue
 
-# Import watchdog for efficient file monitoring
 try:
     from watchdog.observers import Observer
     from watchdog.events import FileSystemEventHandler, FileSystemEvent

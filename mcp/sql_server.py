@@ -1,9 +1,4 @@
-# src/mcp/sql_server.py
-"""
-MCP Server for SQL database integration with RAG
-Includes security fixes for SQL injection prevention
-"""
-from fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP
 import sqlite3
 import json
 from typing import List, Dict, Any, Optional
