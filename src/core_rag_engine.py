@@ -139,7 +139,7 @@ class CoreRAGEngine:
                  enable_hybrid_search: Optional[bool] = None,
                  hybrid_search_alpha: Optional[float] = None,
                  enable_advanced_grounding: Optional[bool] = None) -> None:
-        # Load from AppSettings if parameters are not explicitly passed
+        
         self.llm_provider = llm_provider or app_settings.llm.llm_provider
         _llm_model_name_from_config = app_settings.llm.get_model_name_for_provider(self.llm_provider)
         self.llm_model_name = llm_model_name or _llm_model_name_from_config
@@ -238,7 +238,6 @@ class CoreRAGEngine:
             if not vectorstore:
                 return []
             
-            # Use pagination for large collections
             batch_size = 1000
             all_docs = []
             offset = 0
@@ -317,78 +316,61 @@ class CoreRAGEngine:
         Ensures the retriever is set up with the current engine's default_retrieval_top_k.
         """
         persist_dir = self._get_persist_dir(collection_name)
-    
+
+        # If collection already exists in memory and we're not recreating it
         if collection_name in self.vectorstores and not recreate:
-            # Check if the retriever needs to be created or re-configured (e.g., k changed)
-            if collection_name not in self.retrievers or self.retrievers[collection_name].search_kwargs.get('k') != self.default_retrieval_top_k:
-                if self.enable_hybrid_search:
-                    # Create hybrid retriever
-                    try:
-                        all_docs = self._get_all_documents_from_collection(collection_name)
-                        if all_docs:
-                            self.retrievers[collection_name] = AdaptiveHybridRetriever(
-                                vector_store=self.vectorstores[collection_name],
-                                documents=all_docs,
-                                k=self.default_retrieval_top_k
-                            )
-                            self.logger.info(f"Created hybrid retriever for collection '{collection_name}' with k={self.default_retrieval_top_k}")
-                        else:
-                            # Fallback to standard retriever if no docs are found for BM25
-                            self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
-                                search_kwargs={'k': self.default_retrieval_top_k}
-                            )
-                            self.logger.warning(f"Could not create hybrid retriever for '{collection_name}' (no documents found), using standard retriever")
-                    except Exception as e:
-                        self.logger.warning(f"Failed to create hybrid retriever: {e}, using standard retriever")
-                        self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
-                            search_kwargs={'k': self.default_retrieval_top_k}
-                        )
-                else:
-                    # Standard retriever
-                    self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
-                        search_kwargs={'k': self.default_retrieval_top_k}
-                    )
-                self.logger.info(f"Retriever for collection '{collection_name}' configured with k={self.default_retrieval_top_k}")
+            self._handle_existing_collection_in_memory(collection_name)
             return
-    
+
+        # Handle recreation case
         if recreate:
-            self.logger.info(f"Recreating collection '{collection_name}'. Removing existing if present.")
-            if os.path.exists(persist_dir):
-                shutil.rmtree(persist_dir)
-            if collection_name in self.vectorstores:
-                del self.vectorstores[collection_name]
-            if collection_name in self.retrievers:
-                del self.retrievers[collection_name]
+            self._handle_recreate_collection(collection_name, persist_dir)
             return
-    
+
         # If not in memory and not recreating, try to load from disk
+        self._handle_load_from_disk(collection_name, persist_dir)
+
+
+    def _handle_existing_collection_in_memory(self, collection_name: str) -> None:
+        """Handle case where collection exists in memory and we're not recreating."""
+        # Get current k value based on retriever type (using safe access)
+        current_k = None
+        retriever = self.retrievers.get(collection_name)
+        
+        if retriever:
+            if hasattr(retriever, 'k'):
+                current_k = retriever.k
+            elif hasattr(retriever, 'search_kwargs'):
+                current_k = retriever.search_kwargs.get('k')
+
+        # Check if the retriever needs to be created or re-configured (e.g., k changed)
+        if collection_name not in self.retrievers or current_k != self.default_retrieval_top_k:
+            self._setup_retriever_for_collection(collection_name)
+            self.logger.info(f"Retriever for collection '{collection_name}' configured with k={self.default_retrieval_top_k}")
+
+
+    def _handle_recreate_collection(self, collection_name: str, persist_dir: str) -> None:
+        """Handle recreation of collection - remove existing data."""
+        self.logger.info(f"Recreating collection '{collection_name}'. Removing existing if present.")
+        if os.path.exists(persist_dir):
+            shutil.rmtree(persist_dir)
+        if collection_name in self.vectorstores:
+            del self.vectorstores[collection_name]
+        if collection_name in self.retrievers:
+            del self.retrievers[collection_name]
+
+
+    def _handle_load_from_disk(self, collection_name: str, persist_dir: str) -> None:
+        """Handle loading collection from disk if it exists."""
         if os.path.exists(persist_dir):
             try:
                 self.logger.info(f"Loading existing vector store '{collection_name}' from {persist_dir}")
-                self.vectorstores[collection_name] = Chroma(
-                    collection_name=collection_name,
-                    embedding_function=self.embedding_model,
-                    persist_directory=persist_dir
-                )
+                self.vectorstores[collection_name] = Chroma(collection_name=collection_name,
+                                                            embedding_function=self.embedding_model,
+                                                            persist_directory=persist_dir)
+
                 # After loading from disk, immediately set up the correct retriever
-                # This logic is similar to the fix above but for newly loaded collections
-                if self.enable_hybrid_search:
-                    all_docs = self._get_all_documents_from_collection(collection_name)
-                    if all_docs:
-                        self.retrievers[collection_name] = AdaptiveHybridRetriever(
-                            vector_store=self.vectorstores[collection_name],
-                            documents=all_docs,
-                            k=self.default_retrieval_top_k
-                        )
-                        self.logger.info(f"Created hybrid retriever for newly loaded collection '{collection_name}'")
-                    else:
-                        self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
-                            search_kwargs={'k': self.default_retrieval_top_k}
-                        )
-                else:
-                    self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
-                        search_kwargs={'k': self.default_retrieval_top_k}
-                    )
+                self._setup_retriever_for_collection(collection_name)
                 self.logger.info(f"Successfully loaded '{collection_name}' with k={self.default_retrieval_top_k}.")
             except Exception as e:
                 self.logger.error(f"Error loading vector store '{collection_name}' from {persist_dir}: {e}. A new one may be created if documents are indexed.", exc_info=True)
@@ -398,85 +380,137 @@ class CoreRAGEngine:
                     del self.retrievers[collection_name]
         else:
             self.logger.info(f"No persisted vector store found for '{collection_name}' at {persist_dir}. It will be created upon first indexing.")
-    
+
+
+    def _setup_retriever_for_collection(self, collection_name: str) -> None:
+        """Set up the appropriate retriever (hybrid or standard) for a collection."""
+        if self.enable_hybrid_search:
+            # Create hybrid retriever
+            try:
+                all_docs = self._get_all_documents_from_collection(collection_name)
+                if all_docs:
+                    self.retrievers[collection_name] = AdaptiveHybridRetriever(vector_store=self.vectorstores[collection_name],
+                                                                               documents=all_docs,
+                                                                               k=self.default_retrieval_top_k)
+
+                    self.logger.info(f"Created hybrid retriever for collection '{collection_name}' with k={self.default_retrieval_top_k}")
+                else:
+                    # Fallback to standard retriever if no docs are found for BM25
+                    self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
+                        search_kwargs={'k': self.default_retrieval_top_k}
+                        )
+                    self.logger.warning(f"Could not create hybrid retriever for '{collection_name}' (no documents found), using standard retriever")
+            except Exception as e:
+                self.logger.warning(f"Failed to create hybrid retriever: {e}, using standard retriever")
+                self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
+                    search_kwargs={'k': self.default_retrieval_top_k}
+                )
+        else:
+            # Standard retriever
+            self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
+                search_kwargs={'k': self.default_retrieval_top_k}
+            )
+
     def _init_llm(self, use_json_format: bool) -> Any:
+        """Initialize LLM based on configured provider."""
         provider = self.llm_provider.lower()
+        
         if provider == "openai":
             return self._init_openai_llm(use_json_format)
         if provider == "ollama":
             return self._init_ollama_llm(use_json_format)
         if provider == "google":
             return self._init_google_llm(use_json_format)
+        
         raise ValueError(f"Unsupported LLM provider: {provider}")
-    
 
     def _init_openai_llm(self, use_json: bool) -> ChatOpenAI:
-        if not self.openai_api_key:
-            self.logger.error("OPENAI_API_KEY missing")
-            raise ValueError("OPENAI_API_KEY is required")
-        args: Dict[str, Any] = {
-            "model": self.llm_model_name,
-            "temperature": self.temperature,
-            "openai_api_key": self.openai_api_key,
-        }
-        if use_json:
-            # Request JSON response for structured parsing
-            args["model_kwargs"] = {"response_format": {"type": "json_object"}}
-            self.logger.info(f"JSON mode enabled for {self.llm_model_name}")
+        """Initialize OpenAI LLM with optional JSON formatting."""
+        self._validate_openai_api_key()
+        args = self._build_openai_config(use_json)
         return ChatOpenAI(**args)
 
     def _init_ollama_llm(self, use_json: bool) -> ChatOllama:
-        fmt = "json" if use_json else None
-        # Ollama runs locally, format controls JSON or plain-text output
-        return ChatOllama(model=self.llm_model_name, temperature=self.temperature, format=fmt)
-
+        """Initialize Ollama LLM with optional JSON formatting."""
+        format_type = self._get_ollama_format(use_json)
+        return ChatOllama(model=self.llm_model_name,
+                          temperature=self.temperature,
+                          format=format_type)
 
     def _init_google_llm(self, use_json: bool) -> ChatGoogleGenerativeAI:
+        """Initialize Google Generative AI LLM with optional JSON formatting."""
+        self._validate_google_api_key()
+        kwargs = self._build_google_config(use_json)
+        return ChatGoogleGenerativeAI(**kwargs)
+
+    def _validate_openai_api_key(self) -> None:
+        """Validate that OpenAI API key is present."""
+        if not self.openai_api_key:
+            self.logger.error("OPENAI_API_KEY missing")
+            raise ValueError("OPENAI_API_KEY is required")
+
+    def _validate_google_api_key(self) -> None:
+        """Validate that Google API key is present."""
         if not self.google_api_key:
             self.logger.error("GOOGLE_API_KEY missing")
             raise ValueError("GOOGLE_API_KEY is required")
-        
-        kwargs: Dict[str, Any] = {
-            "model": self.llm_model_name,
-            "temperature": self.temperature,
-            "google_api_key": self.google_api_key,
-            "convert_system_message_to_human": True,
-        }
+
+    def _build_openai_config(self, use_json: bool) -> Dict[str, Any]:
+        """Build configuration dictionary for OpenAI LLM."""
+        args: Dict[str, Any] = {"model": self.llm_model_name,
+                                "temperature": self.temperature,
+                                "openai_api_key": self.openai_api_key}
         
         if use_json:
-            # Request JSON output from Google model
+            args["model_kwargs"] = {"response_format": {"type": "json_object"}}
+            self.logger.info(f"JSON mode enabled for {self.llm_model_name}")
+        
+        return args
+
+    def _build_google_config(self, use_json: bool) -> Dict[str, Any]:
+        """Build configuration dictionary for Google Generative AI LLM."""
+        kwargs: Dict[str, Any] = {"model": self.llm_model_name,
+                                  "temperature": self.temperature,
+                                  "google_api_key": self.google_api_key,
+                                  "convert_system_message_to_human": True}
+        
+        if use_json:
             kwargs["model_kwargs"] = {"response_mime_type": "application/json"}
             self.logger.info(f"JSON mode enabled for Google model {self.llm_model_name}")
-        return ChatGoogleGenerativeAI(**kwargs)
+        
+        return kwargs
 
-    # ---------------------
-    # Embedding Initialization
-    # ---------------------
+    def _get_ollama_format(self, use_json: bool) -> Optional[str]:
+        """Get format parameter for Ollama LLM."""
+        return "json" if use_json else None
+        
     def _init_embedding_model(self) -> Any:
+        """Initialize embedding model based on configured provider."""
         provider = self.embedding_provider.lower()
+        
         if provider == "openai":
             return self._init_openai_embeddings()
         if provider == "gpt4all":
             return self._init_gpt4all_embeddings()
         if provider == "google":
             return self._init_google_embeddings()
+        
         raise ValueError(f"Unsupported embedding provider: {provider}")
 
     def _init_openai_embeddings(self) -> OpenAIEmbeddings:
-        if not self.openai_api_key:
-            self.logger.error("OPENAI_API_KEY missing for embeddings")
-            raise ValueError("OPENAI_API_KEY is required for embeddings")
-        model = self.embedding_model_name or "text-embedding-3-small"
+        """Initialize OpenAI embeddings model."""
+        self._validate_openai_embedding_key()
+        model = self._get_openai_embedding_model()
         return OpenAIEmbeddings(openai_api_key=self.openai_api_key, model=model)
 
     def _init_gpt4all_embeddings(self) -> GPT4AllEmbeddings:
+        """Initialize GPT4All embeddings model."""
         return GPT4AllEmbeddings()
 
     def _init_google_embeddings(self) -> GoogleGenerativeAIEmbeddings:
-        if not self.google_api_key:
-            self.logger.error("GOOGLE_API_KEY missing for embeddings")
-            raise ValueError("GOOGLE_API_KEY is required for embeddings")
-        model = self.embedding_model_name or "models/embedding-001"
+        """Initialize Google Generative AI embeddings model."""
+        self._validate_google_embedding_key()
+        model = self._get_google_embedding_model()
         return GoogleGenerativeAIEmbeddings(model=model, google_api_key=self.google_api_key)
 
     def _init_text_splitter(self) -> BaseChunker:
@@ -486,67 +520,107 @@ class CoreRAGEngine:
         strategy = getattr(app_settings.engine, 'chunking_strategy', 'adaptive')
         
         if strategy == "adaptive":
-            return AdaptiveChunker(
-                chunk_size=self.chunk_size,
-                chunk_overlap=self.chunk_overlap,
-                openai_api_key=self.openai_api_key,
-                model_name=self.llm_model_name
-            )
+            return self._create_adaptive_splitter()
         elif strategy == "semantic" and self.openai_api_key:
-            try:
-                from langchain_experimental.text_splitter import SemanticChunker
-                embeddings = OpenAIEmbeddings(openai_api_key=self.openai_api_key)
-                return SemanticChunker(
-                    embeddings=embeddings,
-                    breakpoint_threshold_type=getattr(app_settings.engine, 'semantic_chunking_threshold', 'percentile')
-                )
-            except ImportError:
-                self.logger.warning("SemanticChunker not available, falling back to adaptive")
-                return AdaptiveChunker(
-                    chunk_size=self.chunk_size,
-                    chunk_overlap=self.chunk_overlap,
-                    openai_api_key=self.openai_api_key
-                )
+            return self._create_semantic_splitter()
         elif strategy == "hybrid":
-            primary = AdaptiveChunker(
+            return self._create_hybrid_splitter()
+        else:
+            return self._create_default_splitter()
+
+    def _validate_openai_embedding_key(self) -> None:
+        """Validate that OpenAI API key is present for embeddings."""
+        if not self.openai_api_key:
+            self.logger.error("OPENAI_API_KEY missing for embeddings")
+            raise ValueError("OPENAI_API_KEY is required for embeddings")
+
+    def _validate_google_embedding_key(self) -> None:
+        """Validate that Google API key is present for embeddings."""
+        if not self.google_api_key:
+            self.logger.error("GOOGLE_API_KEY missing for embeddings")
+            raise ValueError("GOOGLE_API_KEY is required for embeddings")
+
+    def _get_openai_embedding_model(self) -> str:
+        """Get OpenAI embedding model name with fallback."""
+        return self.embedding_model_name or "text-embedding-3-small"
+
+    def _get_google_embedding_model(self) -> str:
+        """Get Google embedding model name with fallback."""
+        return self.embedding_model_name or "models/embedding-001"
+
+    def _create_adaptive_splitter(self) -> AdaptiveChunker:
+        """Create adaptive chunker with configuration."""
+        return AdaptiveChunker(
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
+            openai_api_key=self.openai_api_key,
+            model_name=self.llm_model_name
+        )
+
+    def _create_semantic_splitter(self) -> BaseChunker:
+        """Create semantic chunker with fallback to adaptive."""
+        try:
+            from langchain_experimental.text_splitter import SemanticChunker
+            embeddings = OpenAIEmbeddings(openai_api_key=self.openai_api_key)
+            return SemanticChunker(
+                embeddings=embeddings,
+                breakpoint_threshold_type=getattr(app_settings.engine, 'semantic_chunking_threshold', 'percentile')
+            )
+        except ImportError:
+            self.logger.warning("SemanticChunker not available, falling back to adaptive")
+            return AdaptiveChunker(
                 chunk_size=self.chunk_size,
                 chunk_overlap=self.chunk_overlap,
                 openai_api_key=self.openai_api_key
             )
-            secondary = RecursiveCharacterTextSplitter(
-                chunk_size=self.chunk_size // 2,
-                chunk_overlap=self.chunk_overlap // 2,
-                length_function=len,
-            )
-            return HybridChunker(primary, secondary)
-        else:
-            # Default recursive splitter
-            use_tok = tiktoken is not None and self.llm_provider.lower() == "openai"
-            if use_tok:
-                try:
-                    return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
-                        model_name=self.llm_model_name,
-                        chunk_size=self.chunk_size,
-                        chunk_overlap=self.chunk_overlap,
-                    )
-                except Exception:
-                    self.logger.warning("Tiktoken splitter failed, falling back to default")
-    
-            return RecursiveCharacterTextSplitter(
-                chunk_size=self.chunk_size,
-                chunk_overlap=self.chunk_overlap,
-                length_function=len,
-            )
-            
+
+    def _create_hybrid_splitter(self) -> HybridChunker:
+        """Create hybrid chunker with primary and secondary splitters."""
+        primary = AdaptiveChunker(
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
+            openai_api_key=self.openai_api_key
+        )
+        
+        secondary = RecursiveCharacterTextSplitter(
+            chunk_size=self.chunk_size // 2,
+            chunk_overlap=self.chunk_overlap // 2,
+            length_function=len,
+        )
+        
+        return HybridChunker(primary, secondary)
+
+    def _create_default_splitter(self) -> RecursiveCharacterTextSplitter:
+        """Create default recursive character splitter with tiktoken support."""
+        use_tok = tiktoken is not None and self.llm_provider.lower() == "openai"
+        
+        if use_tok:
+            try:
+                return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+                    model_name=self.llm_model_name,
+                    chunk_size=self.chunk_size,
+                    chunk_overlap=self.chunk_overlap,
+                )
+            except Exception:
+                self.logger.warning("Tiktoken splitter failed, falling back to default")
+
+        return RecursiveCharacterTextSplitter(
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
+            length_function=len,
+        )
+
     def _init_search_tool(self) -> Optional[Runnable]:
+        """Initialize Tavily search tool if available."""
         try:
             from langchain_tavily import TavilySearch
             return TavilySearch(api_key=self.tavily_api_key, max_results=5)
         except ImportError:
             self.logger.warning("langchain-tavily is not installed. Please pip install langchain-tavily")
             return None
-    
+
     def _create_document_relevance_grader_chain(self) -> Runnable:
+        """Create chain for grading document relevance to questions."""
         parser = PydanticOutputParser(pydantic_object=RelevanceGrade)
         
         prompt_template = (
@@ -567,8 +641,9 @@ class CoreRAGEngine:
         chain = prompt | self.json_llm | PydanticOutputParser(pydantic_object=RelevanceGrade)
         self.logger.info("Created document_relevance_grader_chain with PydanticOutputParser.")
         return chain
-    
+
     def _create_document_reranker_chain(self) -> Runnable:
+        """Create chain for re-ranking documents by relevance score."""
         parser = PydanticOutputParser(pydantic_object=RerankScore)
 
         prompt_template = (
@@ -588,11 +663,11 @@ class CoreRAGEngine:
         )
 
         chain = prompt | self.json_llm | PydanticOutputParser(pydantic_object=RerankScore)
-
         self.logger.info("Created document_reranker_chain with PydanticOutputParser.")
         return chain
-    
+
     def _create_query_analyzer_chain(self) -> Runnable:
+        """Create chain for analyzing user queries."""
         self.logger.info("Creating query analyzer chain.")
         parser = PydanticOutputParser(pydantic_object=QueryAnalysis)
 
@@ -612,11 +687,11 @@ class CoreRAGEngine:
             partial_variables={"format_instructions": parser.get_format_instructions()}
         )
 
-
         chain = prompt | self.json_llm | parser 
         return chain
 
     def _create_query_rewriter_chain(self) -> Runnable:
+        """Create chain for rewriting queries with chat history context."""
         self.logger.info("Creating query rewriter chain with chat history support.")
         system_prompt = (
             "You are a query optimization assistant. Given 'Chat History' (if any) and "
@@ -634,6 +709,7 @@ class CoreRAGEngine:
         return chain
 
     def _create_answer_generation_chain(self) -> Runnable:
+        """Create chain for generating answers from context documents."""
         self.logger.info("Creating answer generation chain with chat history and feedback support.")
         
         system_prompt = (
@@ -654,10 +730,11 @@ class CoreRAGEngine:
         chain = prompt | self.llm | StrOutputParser()        
         return chain
 
-
     def _create_grounding_check_chain(self) -> Runnable:
+        """Create chain for checking if answers are grounded in context."""
         self.logger.info("Creating answer grounding check chain.")
         parser = PydanticOutputParser(pydantic_object=GroundingCheck)
+        
         prompt = ChatPromptTemplate.from_template(
             template=(
                 "You are an Answer Grounding Checker. Your task is to verify if the 'Generated Answer' "
@@ -669,142 +746,151 @@ class CoreRAGEngine:
             ),
             partial_variables={"format_instructions": parser.get_format_instructions()}
         )
+        
         chain = prompt | self.json_llm | parser
         return chain
 
     async def _grounding_check_node(self, state: CoreGraphState) -> CoreGraphState:
+        """Perform grounding check on generated answer and provide feedback if needed."""
         self.logger.info("NODE: Performing grounding check on generated answer...")
+        
+        # Extract state variables
         context = state.get("context", "")
         generation = state.get("generation", "")
         question = state.get("original_question") or state.get("question", "")
         documents = state.get("documents", [])
-    
+        
+        # Update attempt tracking
         current_attempts = state.get("grounding_check_attempts", 0) + 1
         state["grounding_check_attempts"] = current_attempts
         state["regeneration_feedback"] = None
-    
+
+        # Skip check if no context/generation or generation error
         if not context or not generation or "Error generating answer." in generation:
             self.logger.info("Skipping grounding check (no context or generation, or generation error).")
             return {**state, "regeneration_feedback": None, "grounding_check_attempts": current_attempts}
-    
+
         try:
             if self.enable_advanced_grounding and self.advanced_grounding_checker:
-                # Use advanced multi-level grounding check
-                import asyncio
-                
-                try:
-                    # Run advanced grounding check
-                    advanced_results = await self.advanced_grounding_checker.perform_comprehensive_grounding_check(answer=generation,
-                                                                                                                   context=context,
-                                                                                                                   question=question,
-                                                                                                                   documents=documents)
-                    
-                    # Process advanced results
-                    overall_assessment = advanced_results.get("overall_assessment", {})
-                    is_acceptable = overall_assessment.get("is_acceptable", False)
-                    
-                    if not is_acceptable:
-                        # Generate detailed feedback based on advanced analysis
-                        feedback_parts = []
-                        
-                        detailed_grounding = advanced_results.get("detailed_grounding")
-                        if detailed_grounding and hasattr(detailed_grounding, 'unsupported_claims') and detailed_grounding.unsupported_claims:
-                            feedback_parts.append(f"Unsupported claims found: {'; '.join(detailed_grounding.unsupported_claims[:3])}")
-                        
-                        consistency = advanced_results.get("consistency")
-                        if consistency and hasattr(consistency, 'contradictions_found') and consistency.contradictions_found:
-                            feedback_parts.append(f"Internal contradictions: {'; '.join(consistency.contradictions_found[:2])}")
-                        
-                        completeness = advanced_results.get("completeness")
-                        if completeness and hasattr(completeness, 'missing_aspects') and completeness.missing_aspects:
-                            feedback_parts.append(f"Missing important aspects: {'; '.join(completeness.missing_aspects[:2])}")
-                        
-                        hallucinations = advanced_results.get("hallucination_detection", {}).get("hallucinations", [])
-                        if hallucinations:
-                            feedback_parts.append(f"Potential hallucinations: {'; '.join(hallucinations[:2])}")
-                        
-                        if feedback_parts:
-                            recommendation = overall_assessment.get("recommendation", "Please improve the answer")
-                            regeneration_prompt = (
-                                f"The previous answer to '{question}' failed advanced verification. "
-                                f"Issues identified: {' | '.join(feedback_parts)}. "
-                                f"Recommendation: {recommendation}. "
-                                f"Please generate a new answer that strictly follows the provided context and addresses these issues."
-                            )
-                            state["regeneration_feedback"] = regeneration_prompt
-                            self.logger.warning(f"Advanced grounding check FAILED (Attempt {current_attempts}). Issues: {len(feedback_parts)}")
-                        else:
-                            # No specific issues identified, use general feedback
-                            state["regeneration_feedback"] = (
-                                f"The answer to '{question}' did not meet quality standards. "
-                                f"Please generate a more accurate answer based strictly on the provided context."
-                            )
-                    else:
-                        self.logger.info(f"Advanced grounding check PASSED (Attempt {current_attempts}). Score: {overall_assessment.get('overall_score', 'N/A')}")
-                        state["regeneration_feedback"] = None
-                    
-                    # Store detailed results for potential debugging
-                    state["advanced_grounding_results"] = advanced_results
-                    
-                except Exception as e:
-                    self.logger.error(f"Advanced grounding check failed with exception: {e}. Falling back to basic check.")
-                    # Fall back to basic grounding check
-                    result: GroundingCheck = self.grounding_check_chain.invoke({
-                        "context": context,
-                        "generation": generation
-                    })
-                    
-                    if not result.is_grounded:
-                        feedback_parts = []
-                        if result.ungrounded_statements:
-                            feedback_parts.append(f"Ungrounded statements: {'; '.join(result.ungrounded_statements)}")
-                        if result.correction_suggestion:
-                            feedback_parts.append(f"Suggestion: {result.correction_suggestion}")
-                        
-                        regeneration_prompt = (
-                            f"The previous answer to '{question}' was not well-grounded. "
-                            f"{' '.join(feedback_parts)} "
-                            f"Please generate a new answer focusing ONLY on the provided documents."
-                        )
-                        state["regeneration_feedback"] = regeneration_prompt
-                        self.logger.warning(f"Basic grounding check FAILED (Attempt {current_attempts})")
-                    else:
-                        state["regeneration_feedback"] = None
-                        self.logger.info(f"Basic grounding check PASSED (Attempt {current_attempts})")
+                await self._perform_advanced_grounding_check(state, context, generation, question, documents, current_attempts)
             else:
-                # Use basic grounding check
-                result: GroundingCheck = self.grounding_check_chain.invoke({
-                    "context": context,
-                    "generation": generation
-                })
-    
-                if not result.is_grounded:
-                    feedback_parts = []
-                    if result.ungrounded_statements:
-                        feedback_parts.append(f"The following statements were ungrounded: {'; '.join(result.ungrounded_statements)}.")
-                    if result.correction_suggestion:
-                        feedback_parts.append(f"Suggestion for correction: {result.correction_suggestion}.")
-    
-                    if not feedback_parts:
-                        feedback_parts.append("The answer was not fully grounded in the provided context. Please revise.")
-    
-                    regeneration_prompt = (
-                        f"The previous answer to the question '{question}' was not well-grounded. "
-                        f"{' '.join(feedback_parts)} "
-                        "Please generate a new answer focusing ONLY on the provided documents and addressing these issues."
-                    )
-                    state["regeneration_feedback"] = regeneration_prompt
-                    self.logger.warning(f"Basic grounding check FAILED (Attempt {current_attempts}). Feedback: {regeneration_prompt}")
-                else:
-                    self.logger.info(f"Basic grounding check PASSED (Attempt {current_attempts}).")
-                    state["regeneration_feedback"] = None
-    
+                self._perform_basic_grounding_check(state, context, generation, question, current_attempts)
         except Exception as e:
-            self.logger.error(f"Grounding check failed with exception: {e}", exc_info=True)
-            state["regeneration_feedback"] = f"A system error occurred during grounding check: {e}. Please try to generate a concise answer based on context."
-            state["error_message"] = (state.get("error_message") or "") + f" | Grounding check exception: {e}"
-    
+            self._handle_grounding_check_exception(state, e, question, current_attempts)
+
         return state
+
+    async def _perform_advanced_grounding_check(self,
+                                                state: CoreGraphState,
+                                                context: str,
+                                                generation: str,
+                                                question: str,
+                                                documents: List,
+                                                attempt: int) -> None:
+        """Perform advanced multi-level grounding check."""
+        try:
+            # Run advanced grounding check
+            advanced_results = await self.advanced_grounding_checker.perform_comprehensive_grounding_check(
+                answer=generation,
+                context=context,
+                question=question,
+                documents=documents
+            )
+            
+            # Process advanced results
+            overall_assessment = advanced_results.get("overall_assessment", {})
+            is_acceptable = overall_assessment.get("is_acceptable", False)
+            
+            if not is_acceptable:
+                self._generate_advanced_feedback(state, advanced_results, question, attempt)
+            else:
+                self.logger.info(f"Advanced grounding check PASSED (Attempt {attempt}). Score: {overall_assessment.get('overall_score', 'N/A')}")
+                state["regeneration_feedback"] = None
+            
+            # Store detailed results for potential debugging
+            state["advanced_grounding_results"] = advanced_results
+            
+        except Exception as e:
+            self.logger.error(f"Advanced grounding check failed with exception: {e}. Falling back to basic check.")
+            self._perform_basic_grounding_check(state, context, generation, question, attempt)
+
+    def _perform_basic_grounding_check(self,
+                                       state: CoreGraphState,
+                                       context: str,
+                                       generation: str,
+                                       question: str,
+                                       attempt: int) -> None:
+        """Perform basic grounding check using the grounding check chain."""
+        result: GroundingCheck = self.grounding_check_chain.invoke({"context": context, "generation": generation})
+
+        if not result.is_grounded:
+            self._generate_basic_feedback(state, result, question, attempt)
+        else:
+            self.logger.info(f"Basic grounding check PASSED (Attempt {attempt}).")
+            state["regeneration_feedback"] = None
+
+    def _generate_advanced_feedback(self, state: CoreGraphState, advanced_results: Dict, question: str, attempt: int) -> None:
+        """Generate detailed feedback based on advanced grounding analysis."""
+        feedback_parts = []
+        
+        detailed_grounding = advanced_results.get("detailed_grounding")
+        if detailed_grounding and hasattr(detailed_grounding, 'unsupported_claims') and detailed_grounding.unsupported_claims:
+            feedback_parts.append(f"Unsupported claims found: {'; '.join(detailed_grounding.unsupported_claims[:3])}")
+        
+        consistency = advanced_results.get("consistency")
+        if consistency and hasattr(consistency, 'contradictions_found') and consistency.contradictions_found:
+            feedback_parts.append(f"Internal contradictions: {'; '.join(consistency.contradictions_found[:2])}")
+        
+        completeness = advanced_results.get("completeness")
+        if completeness and hasattr(completeness, 'missing_aspects') and completeness.missing_aspects:
+            feedback_parts.append(f"Missing important aspects: {'; '.join(completeness.missing_aspects[:2])}")
+        
+        hallucinations = advanced_results.get("hallucination_detection", {}).get("hallucinations", [])
+        if hallucinations:
+            feedback_parts.append(f"Potential hallucinations: {'; '.join(hallucinations[:2])}")
+        
+        if feedback_parts:
+            overall_assessment = advanced_results.get("overall_assessment", {})
+            recommendation = overall_assessment.get("recommendation", "Please improve the answer")
+            regeneration_prompt = (
+                f"The previous answer to '{question}' failed advanced verification. "
+                f"Issues identified: {' | '.join(feedback_parts)}. "
+                f"Recommendation: {recommendation}. "
+                f"Please generate a new answer that strictly follows the provided context and addresses these issues."
+            )
+            state["regeneration_feedback"] = regeneration_prompt
+            self.logger.warning(f"Advanced grounding check FAILED (Attempt {attempt}). Issues: {len(feedback_parts)}")
+        else:
+            # No specific issues identified, use general feedback
+            state["regeneration_feedback"] = (
+                f"The answer to '{question}' did not meet quality standards. "
+                f"Please generate a more accurate answer based strictly on the provided context."
+            )
+
+    def _generate_basic_feedback(self, state: CoreGraphState, result: GroundingCheck, question: str, attempt: int) -> None:
+        """Generate feedback based on basic grounding check results."""
+        feedback_parts = []
+        if result.ungrounded_statements:
+            feedback_parts.append(f"The following statements were ungrounded: {'; '.join(result.ungrounded_statements)}.")
+        if result.correction_suggestion:
+            feedback_parts.append(f"Suggestion for correction: {result.correction_suggestion}.")
+
+        if not feedback_parts:
+            feedback_parts.append("The answer was not fully grounded in the provided context. Please revise.")
+
+        regeneration_prompt = (
+            f"The previous answer to the question '{question}' was not well-grounded. "
+            f"{' '.join(feedback_parts)} "
+            "Please generate a new answer focusing ONLY on the provided documents and addressing these issues."
+        )
+        state["regeneration_feedback"] = regeneration_prompt
+        self.logger.warning(f"Basic grounding check FAILED (Attempt {attempt}). Feedback: {regeneration_prompt}")
+
+    def _handle_grounding_check_exception(self, state: CoreGraphState, exception: Exception, question: str, attempt: int) -> None:
+        """Handle exceptions during grounding check execution."""
+        self.logger.error(f"Grounding check failed with exception: {exception}", exc_info=True)
+        state["regeneration_feedback"] = f"A system error occurred during grounding check: {exception}. Please try to generate a concise answer based on context."
+        state["error_message"] = (state.get("error_message") or "") + f" | Grounding check exception: {exception}"
         
     def _route_after_grounding_check(self, state: CoreGraphState) -> str:
         self.logger.info(

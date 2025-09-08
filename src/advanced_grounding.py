@@ -3,8 +3,8 @@ from dataclasses import dataclass
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.language_models import BaseChatModel
 from langchain.schema import Document
-from langchain_openai import ChatOpenAI
 import re
 import logging
 
@@ -90,7 +90,7 @@ class MultiLevelGroundingChecker:
     Advanced grounding checker with multiple levels of verification
     """
     
-    def __init__(self, llm: ChatOpenAI):
+    def __init__(self, llm: BaseChatModel):
         self.llm = llm
         self.logger = logging.getLogger(self.__class__.__name__)
         
