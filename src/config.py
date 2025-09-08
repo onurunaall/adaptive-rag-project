@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional, Literal
+from pathlib import Path
 
 
 class APISettings(BaseSettings):
@@ -87,20 +88,34 @@ class AgentSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix='', extra='ignore')
 
 class MCPSettings(BaseSettings):
-    """MCP Server Configurations"""
+    """MCP Server Configurations with Absolute Paths"""
     filesystem_command: str = "python"
-    filesystem_args: list[str] = ["mcp/filesystem_server.py"]
-    filesystem_transport: str = "stdio"
-    
     memory_command: str = "python"
-    memory_args: list[str] = ["mcp/memory_server.py"]
-    memory_transport: str = "stdio"
-    
     sql_command: str = "python"
-    sql_args: list[str] = ["mcp/sql_server.py"]
+    
+    filesystem_transport: str = "stdio"
+    memory_transport: str = "stdio"
     sql_transport: str = "stdio"
 
     model_config = SettingsConfigDict(env_prefix='MCP_', extra='ignore')
+    
+    @property
+    def filesystem_args(self) -> list[str]:
+        """Get absolute path to filesystem server"""
+        project_root = Path(__file__).parent.parent
+        return [str(project_root.absolute() / "mcp" / "filesystem_server.py")]
+    
+    @property
+    def memory_args(self) -> list[str]:
+        """Get absolute path to memory server"""
+        project_root = Path(__file__).parent.parent
+        return [str(project_root.absolute() / "mcp" / "memory_server.py")]
+    
+    @property
+    def sql_args(self) -> list[str]:
+        """Get absolute path to SQL server"""
+        project_root = Path(__file__).parent.parent
+        return [str(project_root.absolute() / "mcp" / "sql_server.py")]
 
 class AppSettings(BaseSettings):
     """Overall Application Settings"""

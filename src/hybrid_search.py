@@ -184,7 +184,8 @@ class HybridRetriever(BaseRetriever):
     def _get_doc_key(self, doc: Document) -> str:
         """Generate unique key for document"""
         # Use hash of content + source for uniqueness
-        content_hash = hash(doc.page_content[:100])  # First 100 chars
+        import hashlib
+        content_hash = hashlib.md5(doc.page_content[:100].encode()).hexdigest() # First 100 chars
         source = doc.metadata.get('source', 'unknown')
         return f"{source}_{content_hash}"
 

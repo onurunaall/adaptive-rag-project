@@ -53,21 +53,21 @@ class MCPEnhancedRAG:
         if enable_filesystem:
             self.mcp_config["filesystem"] = {
                 "command": getattr(app_settings.mcp, 'filesystem_command', 'python'),
-                "args": getattr(app_settings.mcp, 'filesystem_args', [filesystem_args]),
+                "args": getattr(app_settings.mcp, 'filesystem_args', filesystem_args),
                 "transport": getattr(app_settings.mcp, 'filesystem_transport', "stdio")
             }
         
         if enable_memory:
             self.mcp_config["memory"] = {
                 "command": getattr(app_settings.mcp, 'memory_command', 'python'),
-                "args": getattr(app_settings.mcp, 'memory_args', [memory_args]),
+                "args": getattr(app_settings.mcp, 'memory_args', memory_args),
                 "transport": getattr(app_settings.mcp, 'memory_transport', "stdio")
             }
         
         if enable_sql:
             self.mcp_config["sql"] = {
                 "command": getattr(app_settings.mcp, 'sql_command', 'python'),
-                "args": getattr(app_settings.mcp, 'sql_args', [sql_args]),
+                "args": getattr(app_settings.mcp, 'sql_args', sql_args),
                 "transport": getattr(app_settings.mcp, 'sql_transport', "stdio")
             }
         

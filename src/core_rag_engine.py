@@ -1327,7 +1327,7 @@ class CoreRAGEngine:
                     self.logger.info(f"Using {len(direct_documents)} preloaded documents for ingestion.")
                     all_chunks_for_collection = self.split_documents(direct_documents)
                 else:
-                    self.logger.error("`direct_documents` provided but some items are not Document instances.")
+                    self.logger.error("'direct_documents' provided but some items are not Document instances.")
             elif sources is not None:
                 self.logger.info("Processing documents from `sources` parameter.")
                 if not isinstance(sources, list):
@@ -1358,6 +1358,7 @@ class CoreRAGEngine:
             )
         except Exception as e:
             self.logger.error(f"Ingestion failed for collection '{name}': {e}", exc_info=True)
+            raise
 
     def answer_query(
         self,
