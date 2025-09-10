@@ -1,4 +1,23 @@
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+    MCP_AVAILABLE = True
+except ImportError:
+    class FastMCP:
+        def __init__(self, name):
+            self.name = name
+            print(f"Warning: MCP package not available. {name} server will not function.")
+        
+        def tool(self):
+            def decorator(func):
+                return func
+            return decorator
+        
+        def run(self, transport="stdio"):
+            print(f"Warning: Cannot run {self.name} - MCP package not installed")
+            pass
+    
+    MCP_AVAILABLE = False
+  
 import sqlite3
 import json
 from typing import List, Dict, Any, Optional
@@ -565,4 +584,8 @@ async def execute_batch_queries(
         }
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    if MCP_AVAILABLE:
+            mcp.run(transport="stdio")
+    else:
+        print("MCP package not available. Server cannot run.")
+        print("Install with: pip install mcp>=1.6.0")
