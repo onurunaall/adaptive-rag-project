@@ -1501,7 +1501,7 @@ class CoreRAGEngine:
             "collection_name": name,
             "chat_history": chat_history or []
         }
-        final = self.rag_workflow.invoke(initial_state)
+        final = await self.rag_workflow.invoke(initial_state)
 
         answer = final.get("generation", "")
         docs   = final.get("documents", [])
