@@ -1,4 +1,24 @@
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+    MCP_AVAILABLE = True
+except ImportError:
+    # Create a dummy FastMCP for when mcp is not available
+    class FastMCP:
+        def __init__(self, name):
+            self.name = name
+            print(f"Warning: MCP package not available. {name} server will not function.")
+        
+        def tool(self):
+            def decorator(func):
+                return func
+            return decorator
+        
+        def run(self, transport="stdio"):
+            print(f"Warning: Cannot run {self.name} - MCP package not installed")
+            pass
+    
+    MCP_AVAILABLE = False
+
 import hashlib
 from pathlib import Path
 import json
@@ -378,7 +398,11 @@ def cleanup():
         observer.join()
 
 if __name__ == "__main__":
-    try:
-        mcp.run(transport="stdio")
-    finally:
-        cleanup()
+    if MCP_AVAILABLE:
+        try:
+            mcp.run(transport="stdio")
+        finally:
+            cleanup()
+    else:
+        print("MCP package not available. Server cannot run.")
+        print("Install with: pip install mcp>=1.6.0")
