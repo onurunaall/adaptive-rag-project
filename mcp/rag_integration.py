@@ -1,4 +1,10 @@
-from langchain_mcp_adapters.client import MultiServerMCPClient
+try:
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+    MCP_AVAILABLE = True
+except ImportError:
+    MultiServerMCPClient = None
+    MCP_AVAILABLE = False
+
 from langchain.tools import BaseTool, Tool
 from typing import List, Dict, Any, Optional
 import asyncio
@@ -43,6 +49,14 @@ class MCPEnhancedRAG:
         self.tools: Dict[str, BaseTool] = {}
         self.logger = logging.getLogger(__name__)
         
+        # Check if MCP is available
+        if not MCP_AVAILABLE:
+            self.logger.warning("MCP adapters not available. MCP functionality will be disabled.")
+            self.mcp_available = False
+            return
+        
+        self.mcp_available = True
+        
         filesystem_args: list[str] = [str(PROJECT_ROOT / "mcp" / "filesystem_server.py")]
         memory_args: list[str] = [str(PROJECT_ROOT / "mcp" / "memory_server.py")]
         sql_args: list[str] = [str(PROJECT_ROOT / "mcp" / "sql_server.py")]
@@ -78,6 +92,10 @@ class MCPEnhancedRAG:
     
     async def initialize_mcp_servers(self) -> bool:
         """Initialize and connect to MCP servers with error handling."""
+        if not self.mcp_available:
+            self.logger.warning("MCP not available - skipping server initialization")
+            return False
+            
         try:
             if not self.mcp_config:
                 self.logger.warning("No MCP servers configured")
@@ -103,7 +121,7 @@ class MCPEnhancedRAG:
         except Exception as e:
             self.logger.error(f"Failed to initialize MCP servers: {e}")
             return False
-    
+        
     def set_deleted_files_handler(self, handler):
         """
         Set a custom handler for deleted files.
