@@ -15,6 +15,7 @@ dependencies = [
     "beautifulsoup4>=4.12.0,<5.0.0",
     "chromadb>=0.4.0,<0.5.0",
     "gpt4all>=2.0.0,<3.0.0",
+    # Keep stable LangChain 0.2.x versions
     "langchain>=0.2.0,<0.3.0",
     "langchain-community>=0.2.0,<0.3.0",
     "langchain-core>=0.2.0,<0.3.0",
@@ -22,8 +23,6 @@ dependencies = [
     "langchain-google-genai>=1.0.0,<2.0.0",
     "langchain-openai>=0.1.0,<0.2.0",
     "langchainhub>=0.1.0,<0.2.0",
-    # "langchain-mcp-adapters>=0.1.8",
-    # "mcp>=1.6.0",
     "langgraph>=0.2.0,<0.3.0",
     "pydantic>=2.0.0,<3.0.0",
     "pydantic-settings>=2.0.0,<3.0.0",
@@ -31,7 +30,8 @@ dependencies = [
     "python-dotenv>=1.0.0,<2.0.0",
     "streamlit>=1.35.0,<2.0.0",
     "tavily-python>=0.3.0,<0.4.0",
-    "langchain-tavily>=0.1.0,<0.2.0",
+    # Removed langchain-tavily due to version conflict
+    # "langchain-tavily>=0.1.0,<0.2.0",
     "tiktoken>=0.7.0,<0.8.0",
     "rank-bm25>=0.2.0,<0.3.0",
     "scikit-learn>=1.4.0,<2.0.0",
@@ -40,8 +40,7 @@ dependencies = [
     "spacy>=3.7.0,<4.0.0",
     "neo4j>=5.15.0,<6.0.0",
     "pillow>=10.0.0,<11.0.0",
-    "nest-asyncio>=1.5.0,<2.0.0",
-    "pytest-asyncio>=1.0.0"
+    "nest-asyncio>=1.5.0,<2.0.0"
 ]
 
 [project.optional-dependencies]
@@ -53,11 +52,17 @@ dev = [
   "mypy",
   "black"]
 
+# Optional MCP support for users with Python 3.10+
 mcp = [
   "mcp>=1.6.0",
   "langchain-mcp-adapters>=0.1.8"
 ]
-  
+
+# Optional Tavily support - requires newer LangChain
+tavily = [
+  "langchain-tavily>=0.1.0,<0.2.0"
+]
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
