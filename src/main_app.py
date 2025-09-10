@@ -65,7 +65,7 @@ if st.sidebar.button("Ingest Documents"):
 
 # Stock News Feed
 st.sidebar.markdown("---")
-st.sidebar.subheader("Stock News Feed 📈")
+st.sidebar.subheader("Stock News Feed")
 
 stock_tickers_input = st.sidebar.text_input(
     "Enter stock tickers (e.g., AAPL, MSFT, NVDA)",
@@ -92,7 +92,7 @@ max_articles_stock = st.sidebar.number_input(
     step=1
 )
 
-if st.sidebar.button("Ingest Stock News 📰"):
+if st.sidebar.button("Ingest Stock News"):
     if not stock_tickers_input.strip():
         st.sidebar.warning("Please enter at least one stock ticker.")
     else:
@@ -146,7 +146,7 @@ recreate_scraper_collection = st.sidebar.checkbox(
     key="recreate_scraper_collection_checkbox"
 )
 
-if st.sidebar.button("Ingest Scraped Content 🔍"):
+if st.sidebar.button("Ingest Scraped Content"):
     urls_to_scrape = [
         url.strip() for url in scraper_urls_input.splitlines()
         if url.strip().lower().startswith("http")
@@ -170,7 +170,7 @@ if st.sidebar.button("Ingest Scraped Content 🔍"):
                         recreate_collection=recreate_scraper_collection
                     )
                     st.sidebar.success(
-                        f"✅ Ingested content from {len(scraped_documents)} URL(s) "
+                        f"Ingested content from {len(scraped_documents)} URL(s) "
                         f"into '{scraper_collection_name}'."
                     )
                 else:
@@ -204,27 +204,21 @@ if st.button("Get Answer"):
         current_q = question.strip()
         with st.spinner("Generating adaptive answer..."):
             try:
-                resp = engine.run_full_rag_workflow(
-                    question=current_q,
-                    collection_name=collection_name,
-                    chat_history=st.session_state.qa_chat_history
-                )
+                resp = engine.run_full_rag_workflow_sync(question=current_q,
+                                                         collection_name=collection_name,
+                                                         chat_history=st.session_state.qa_chat_history)
                 ai_ans = resp.get("answer", "Sorry, no answer.")
 
-                # append to history
                 st.session_state.qa_chat_history.append(HumanMessage(content=current_q))
                 st.session_state.qa_chat_history.append(AIMessage(content=ai_ans))
 
             except Exception as e:
                 st.session_state.qa_chat_history.append(HumanMessage(content=current_q))
-                st.session_state.qa_chat_history.append(
-                    AIMessage(content=f"Error processing request: {e}")
-                )
+                st.session_state.qa_chat_history.append(AIMessage(content=f"Error processing request: {e}"))
                 st.error(f"Error: {e}")
 
         st.rerun()
-
-# ───────────────────────────────────────────────────────────────────────────────
+        
 # Insight Agent (Advanced Tasks)
 st.markdown("---")
 st.header("🔬 Insight Agent (Advanced Tasks)")
