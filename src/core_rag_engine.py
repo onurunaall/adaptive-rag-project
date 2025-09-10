@@ -750,7 +750,7 @@ class CoreRAGEngine:
         chain = prompt | self.json_llm | parser
         return chain
 
-	def _grounding_check_node(self, state: CoreGraphState) -> CoreGraphState:
+	async def _grounding_check_node(self, state: CoreGraphState) -> CoreGraphState
         """Perform grounding check on generated answer and provide feedback if needed."""
         self.logger.info("NODE: Performing grounding check on generated answer...")
         
@@ -1474,40 +1474,63 @@ class CoreRAGEngine:
         ]
         return {"answer": ans.strip(), "sources": sources}
 
-    # ---------------------
-    # Public API: Full Workflow
-    # ---------------------
-    def run_full_rag_workflow(
-        self,
-        question: str,
-        collection_name: Optional[str] = None,
-        chat_history: Optional[List[BaseMessage]] = None
-    ) -> Dict[str, Any]:
-        name = collection_name or self.default_collection_name
-        initial_state: CoreGraphState = {
-            "question": question,
-            "original_question": question,
-            "query_analysis_results": None,
-            "documents": [],
-            "context": "",
-            "web_search_results": None,
-            "generation": "",
-            "retries": 0,
-            "run_web_search": "No",
-            "relevance_check_passed": None,
-            "error_message": None,
-            "grounding_check_attempts": 0,
-            "regeneration_feedback": None,
-            "collection_name": name,
-            "chat_history": chat_history or []
-        }
-        final = self.rag_workflow.invoke(initial_state)
-
-        answer = final.get("generation", "")
-        docs   = final.get("documents", [])
-        sources = [
-            {"source": d.metadata.get("source", "unknown"),
-             "preview": d.page_content[:200] + "..."}
-            for d in docs
-        ]
-        return {"answer": answer, "sources": sources}
+    async def run_full_rag_workflow(self,
+									question: str,
+									collection_name: Optional[str] = None,
+									chat_history: Optional[List[BaseMessage]] = None) -> Dict[str, Any]:
+										
+	    name = collection_name or self.default_collection_name
+	    initial_state: CoreGraphState = {
+	        "question": question,
+	        "original_question": question,
+	        "query_analysis_results": None,
+	        "documents": [],
+	        "context": "",
+	        "web_search_results": None,
+	        "generation": "",
+	        "retries": 0,
+	        "run_web_search": "No",
+	        "relevance_check_passed": None,
+	        "error_message": None,
+	        "grounding_check_attempts": 0,
+	        "regeneration_feedback": None,
+	        "collection_name": name,
+	        "chat_history": chat_history or []
+	    }
+	    final = await self.rag_workflow.ainvoke(initial_state)
+	
+	    answer = final.get("generation", "")
+	    docs   = final.get("documents", [])
+	    sources = [{"source": d.metadata.get("source", "unknown"), "preview": d.page_content[:200] + "..."} for d in docs]
+	    return {"answer": answer, "sources": sources}
+										
+	def run_full_rag_workflow_sync(self,
+								   question: str,
+								   collection_name: Optional[str] = None,
+								   chat_history: Optional[List[BaseMessage]] = None) -> Dict[str, Any]:
+	    """Synchronous wrapper for the async workflow"""
+	    import asyncio
+	    import nest_asyncio
+									   
+	    # Try to get existing event loop, create new one if needed
+	    try:
+	        loop = asyncio.get_event_loop()
+	        if loop.is_running():
+	            nest_asyncio.apply()
+	            return loop.run_until_complete(self.run_full_rag_workflow(question, collection_name, chat_history))
+	        else:
+	            return loop.run_until_complete(self.run_full_rag_workflow(question, collection_name, chat_history))
+	    
+		except RuntimeError:
+	        # No event loop exists, create a new one
+	        return asyncio.run(self.run_full_rag_workflow(question, collection_name, chat_history))
+	    except ImportError:
+	        # nest_asyncio not available, create new event loop
+	        new_loop = asyncio.new_event_loop()
+	        asyncio.set_event_loop(new_loop)
+	        try:
+	            return new_loop.run_until_complete(
+	                self.run_full_rag_workflow(question, collection_name, chat_history)
+	            )
+	        finally:
+	            new_loop.close()
