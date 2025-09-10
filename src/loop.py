@@ -74,7 +74,23 @@ class AgentLoopWorkflow:
         if _enable_tavily:
             tavily_key = app_settings.api.tavily_api_key
             if tavily_key:
-                self.tools.append(TavilySearch(api_key=tavily_key, max_results=3))
+                if TAVILY_LANGCHAIN_AVAILABLE
+                    self.tools.append(TavilySearch(api_key=tavily_key, max_results=3))
+                    self.logger.info("Using langchain-tavily TavilySearch")
+                else:
+                    try:
+                        tavily_tool = TavilySearchResults(max_results=3)
+                        # Create a proper Tool wrapper
+                        self.tools.append(Tool(
+                            name="TavilySearch",
+                            func=tavily_tool.run,
+                            description="Search the web for current information"
+                        ))
+                        self.logger.info("Using langchain-community TavilySearchResults (langchain-tavily not available)")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to initialize Tavily fallback: {e}")
+            else:
+                self.logger.warning("Tavily enabled but no API key provided")
         if _enable_repl:
             self.repl = PythonREPL()
             self.tools.append(Tool(name="python_repl", func=self.repl.run, description="Executes Python code."))
