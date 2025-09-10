@@ -1,4 +1,23 @@
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+    MCP_AVAILABLE = True
+except ImportError:
+    class FastMCP:
+        def __init__(self, name):
+            self.name = name
+            print(f"Warning: MCP package not available. {name} server will not function.")
+        
+        def tool(self):
+            def decorator(func):
+                return func
+            return decorator
+        
+        def run(self, transport="stdio"):
+            print(f"Warning: Cannot run {self.name} - MCP package not installed")
+            pass
+    
+    MCP_AVAILABLE = False
+    
 import json
 import sqlite3
 from datetime import datetime
@@ -538,4 +557,8 @@ def _extract_keywords(text: str, max_keywords: int = 10) -> list:
     return [kw[0] for kw in sorted_keywords[:max_keywords]]
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    if MCP_AVAILABLE:
+        mcp.run(transport="stdio")
+    else:
+        print("MCP package not available. Server cannot run.")
+        print("Install with: pip install mcp>=1.6.0")
