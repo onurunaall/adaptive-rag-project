@@ -750,7 +750,7 @@ class CoreRAGEngine:
         chain = prompt | self.json_llm | parser
         return chain
 
-    async def _grounding_check_node(self, state: CoreGraphState) -> CoreGraphState:
+	def _grounding_check_node(self, state: CoreGraphState) -> CoreGraphState:
         """Perform grounding check on generated answer and provide feedback if needed."""
         self.logger.info("NODE: Performing grounding check on generated answer...")
         
@@ -1501,7 +1501,7 @@ class CoreRAGEngine:
             "collection_name": name,
             "chat_history": chat_history or []
         }
-        final = await self.rag_workflow.invoke(initial_state)
+        final = self.rag_workflow.invoke(initial_state)
 
         answer = final.get("generation", "")
         docs   = final.get("documents", [])
