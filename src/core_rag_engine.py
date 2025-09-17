@@ -119,7 +119,6 @@ class CoreRAGEngine:
     """
     Core RAG engine: ingestion, indexing, and adaptive querying via LangGraph.
     """
-
     def __init__(self,
                  llm_provider: Optional[str] = None,
                  llm_model_name: Optional[str] = None,
@@ -139,7 +138,13 @@ class CoreRAGEngine:
                  enable_hybrid_search: Optional[bool] = None,
                  hybrid_search_alpha: Optional[float] = None,
                  enable_advanced_grounding: Optional[bool] = None) -> None:
-        
+        """
+        Initializes the CoreRAGEngine with configuration settings.
+
+        This sets up LLMs, embeddings, chunking strategies, search tools,
+        and compiles the internal RAG workflow graph.
+        """
+        # --- Core Configuration ---
         self.llm_provider = llm_provider or app_settings.llm.llm_provider
         _llm_model_name_from_config = app_settings.llm.get_model_name_for_provider(self.llm_provider)
         self.llm_model_name = llm_model_name or _llm_model_name_from_config
@@ -153,41 +158,42 @@ class CoreRAGEngine:
         self.chunk_overlap = chunk_overlap or app_settings.engine.chunk_overlap
         self.default_collection_name = default_collection_name or app_settings.engine.default_collection_name
 
-        # Persist directory logic
-        self.persist_directory_base = persist_directory_base if persist_directory_base is not None else app_settings.engine.persist_directory_base
-        base = self.persist_directory_base if self.persist_directory_base is not None else tempfile.gettempdir()
-        self.persist_directory_base = os.path.join(base, "core_rag_engine_chroma")
+        # --- Persistence Setup ---
+        configured_persist_dir = persist_directory_base if persist_directory_base is not None else app_settings.engine.persist_directory_base
+        base_dir = configured_persist_dir if configured_persist_dir is not None else tempfile.gettempdir()
+        self.persist_directory_base = os.path.join(base_dir, "core_rag_engine_chroma")
         os.makedirs(self.persist_directory_base, exist_ok=True)
 
-        # API keys
+        # --- API Keys ---
         self.tavily_api_key = tavily_api_key if tavily_api_key is not None else app_settings.api.tavily_api_key
         self.openai_api_key = openai_api_key if openai_api_key is not None else app_settings.api.openai_api_key
         self.google_api_key = google_api_key if google_api_key is not None else app_settings.api.google_api_key
 
+        # --- Workflow Limits ---
         self.max_rewrite_retries = max_rewrite_retries if max_rewrite_retries is not None else app_settings.engine.max_rewrite_retries
         self.max_grounding_attempts = max_grounding_attempts if max_grounding_attempts is not None else app_settings.engine.max_grounding_attempts
         self.default_retrieval_top_k = default_retrieval_top_k if default_retrieval_top_k is not None else app_settings.engine.default_retrieval_top_k
-        
-        # Hybrid search settings
+
+        # --- Hybrid Search Configuration ---
         self.enable_hybrid_search = enable_hybrid_search if enable_hybrid_search is not None else getattr(app_settings.engine, 'enable_hybrid_search', False)
         self.hybrid_search_alpha = hybrid_search_alpha if hybrid_search_alpha is not None else getattr(app_settings.engine, 'hybrid_search_alpha', 0.7)
-        
-        # Logger
+
+        # --- Logger Setup ---
         self._setup_logger()
 
-        # Initialize LLMs (normal and JSON-formatted)
+        # --- Core Components Initialization ---
+        # Initialize LLMs (normal output and JSON-formatted output)
         self.llm = self._init_llm(use_json_format=False)
         self.json_llm = self._init_llm(use_json_format=True)
 
-        # Embeddings
+        # Initialize Embedding Model
         self.embedding_model = self._init_embedding_model()
 
-        # Splitter and search tool
+        # Initialize Text Splitter and Web Search Tool
         self.text_splitter = self._init_text_splitter()
-                
         self.search_tool = self._init_search_tool()
 
-        # Individual LLM Chains
+        # --- Individual LLM Chains for Workflow Steps ---
         self.document_relevance_grader_chain = self._create_document_relevance_grader_chain()
         self.document_reranker_chain = self._create_document_reranker_chain()
         self.query_rewriter_chain = self._create_query_rewriter_chain()
@@ -195,562 +201,1168 @@ class CoreRAGEngine:
         self.grounding_check_chain = self._create_grounding_check_chain()
         self.query_analyzer_chain = self._create_query_analyzer_chain()
 
-        # Compile the RAG workflow graph
+        # --- Workflow Graph Compilation ---
         self._compile_rag_workflow()
 
-        # Storage for vector stores and retrievers
+        # --- Storage for Runtime Data ---
         self.vectorstores: Dict[str, Chroma] = {}
         self.retrievers: Dict[str, Any] = {}
-                     
-        # Advanced grounding settings
+
+        # --- Advanced Grounding Configuration ---
         self.enable_advanced_grounding = enable_advanced_grounding if enable_advanced_grounding is not None else getattr(app_settings.engine, 'enable_advanced_grounding', False)
         
-        # Initialize advanced grounding checker if enabled
+        # Initialize advanced grounding checker if the feature is enabled
         self.advanced_grounding_checker = None
         if self.enable_advanced_grounding:
             try:
                 self.advanced_grounding_checker = MultiLevelGroundingChecker(self.llm)
-                self.logger.info("Advanced grounding checker initialized")
+                self.logger.info("Advanced grounding checker initialized successfully.")
             except Exception as e:
                 self.logger.warning(f"Failed to initialize advanced grounding checker: {e}")
 
+        # --- Document Cache for Retrieval Optimization ---
         self.document_cache = {}
-        self.cache_ttl = 300  # 5 minutes TTL
+        self.cache_ttl = 300  # 5 minutes Time-To-Live for cached documents
         self.cache_timestamps = {}
-        
-        self.logger.info("CoreRAGEngine initialized and workflow compiled.")
 
-    def _get_all_documents_from_collection(self, collection_name: str) -> List[Document]:
-        """Retrieve all documents with caching and memory optimization"""
-        import time
+        self.logger.info("CoreRAGEngine initialization complete and workflow compiled.")
         
-        # Check cache
+    
+    def _get_all_documents_from_collection(self, collection_name: str) -> List[Document]:
+        """
+        Retrieve all documents from a specified collection with caching and memory optimization.
+
+        This method fetches all documents from the vector store's underlying Chroma collection,
+        batching the retrieval to manage memory usage for large collections. It also implements
+        a simple in-memory cache with a Time-To-Live (TTL) to improve performance on repeated calls.
+
+        Args:
+            collection_name (str): The name of the collection to retrieve documents from.
+
+        Returns:
+            List[Document]: A list of all Document objects in the collection, or an empty list
+                            if the collection doesn't exist, is empty, or an error occurs.
+        """
+        import time
+
+        # --- Cache Check ---
         cache_key = collection_name
         current_time = time.time()
-        
+
+        # Check if we have a fresh cached version
         if cache_key in self.document_cache:
-            if current_time - self.cache_timestamps.get(cache_key, 0) < self.cache_ttl:
-                self.logger.debug(f"Using cached documents for '{collection_name}'")
+            cache_age = current_time - self.cache_timestamps.get(cache_key, 0)
+            if cache_age < self.cache_ttl:
+                self.logger.debug(f"Cache HIT: Using cached documents for '{collection_name}' (Age: {cache_age:.1f}s)")
                 return self.document_cache[cache_key]
-        
+            else:
+                self.logger.debug(f"Cache EXPIRED: Cached documents for '{collection_name}' are stale (Age: {cache_age:.1f}s)")
+
+        # --- Retrieval from Vector Store ---
         try:
             vectorstore = self.vectorstores.get(collection_name)
             if not vectorstore:
+                self.logger.warning(f"Vector store for collection '{collection_name}' not found in memory.")
                 return []
-            
+
+            # --- Batched Retrieval ---
             batch_size = 1000
-            all_docs = []
+            all_docs: List[Document] = []
             offset = 0
-            
-            collection = vectorstore._collection
-            
+            collection = vectorstore._collection  # Access the underlying Chroma collection
+
+            self.logger.info(f"Starting full document retrieval for collection '{collection_name}'...")
+
             while True:
-                results = collection.get(limit=batch_size, offset=offset)
-                
-                if not results['documents']:
-                    break
+                try:
+                    # Fetch a batch of documents
+                    results = collection.get(limit=batch_size, offset=offset)
+
+                    # Break if no more documents are returned
+                    if not results.get('documents'):
+                        break
+
+                    # Process the batch: Convert raw data to Document objects
+                    # Safely handle potential None values for metadatas
+                    contents = results.get('documents', [])
+                    metadatas = results.get('metadatas') or [None] * len(contents)
                     
-                for content, metadata in zip(results['documents'], results['metadatas'] or []):
-                    doc = Document(page_content=content, metadata=metadata or {})
-                    all_docs.append(doc)
-                
-                if len(results['documents']) < batch_size:
-                    break
-                    
-                offset += batch_size
-                
-                # Clear memory periodically
-                if offset % 5000 == 0:
-                    import gc
-                    gc.collect()
-            
-            # Update cache
+                    for content, metadata in zip(contents, metadatas):
+                        # Ensure content is a string and metadata is a dict
+                        if isinstance(content, str):
+                            doc_metadata = metadata if isinstance(metadata, dict) else {}
+                            doc = Document(page_content=content, metadata=doc_metadata)
+                            all_docs.append(doc)
+                        else:
+                            self.logger.warning(f"Skipping non-string document content in batch at offset {offset}.")
+
+                    # Check if this was the last batch
+                    if len(contents) < batch_size:
+                        break
+
+                    # Move to the next batch
+                    offset += batch_size
+
+                    # Periodic memory cleanup for very large collections
+                    if offset % 5000 == 0:
+                        self.logger.debug(f"Retrieved {offset} documents so far for '{collection_name}'. Triggering gc.collect().")
+                        import gc
+                        gc.collect()
+
+                except Exception as batch_error:
+                    self.logger.error(f"Error processing batch at offset {offset} for collection '{collection_name}': {batch_error}", exc_info=True)
+                    raise
+
+            self.logger.info(f"Finished retrieving {len(all_docs)} documents from '{collection_name}'.")
+
+            # --- Update Cache ---
             self.document_cache[cache_key] = all_docs
             self.cache_timestamps[cache_key] = current_time
-            
-            # Clean old cache entries
-            for key in list(self.cache_timestamps.keys()):
-                if current_time - self.cache_timestamps[key] > self.cache_ttl * 2:
-                    del self.document_cache[key]
-                    del self.cache_timestamps[key]
-            
+
+            # --- Cache Maintenance ---
+            # Remove stale entries that are significantly past their TTL
+            try:
+                expired_keys = [
+                    key for key, timestamp in self.cache_timestamps.items()
+                    if current_time - timestamp > self.cache_ttl * 2
+                ]
+                for key in expired_keys:
+                    # Use pop with default to avoid KeyError if key was already removed
+                    self.document_cache.pop(key, None)
+                    self.cache_timestamps.pop(key, None)
+                if expired_keys:
+                    self.logger.debug(f"Cache maintenance: Removed {len(expired_keys)} stale entries.")
+            except Exception as cache_maintenance_error:
+                # Log cache maintenance errors but don't let them break the main functionality
+                self.logger.warning(f"Error during cache maintenance: {cache_maintenance_error}")
+
             return all_docs
-            
+
         except Exception as e:
-            self.logger.error(f"Failed to retrieve documents from '{collection_name}': {e}")
+            self.logger.error(f"Failed to retrieve documents from collection '{collection_name}': {e}", exc_info=True)
+            # Return an empty list to indicate failure without breaking the caller
             return []
 
-    def clear_document_cache(self, collection_name: Optional[str] = None):
-        """Clear document cache to free memory"""
-        if collection_name:
-            self.document_cache.pop(collection_name, None)
-            self.cache_timestamps.pop(collection_name, None)
-        else:
-            self.document_cache.clear()
-            self.cache_timestamps.clear()
-        
-        import gc
-        gc.collect()
+
+    def clear_document_cache(self, collection_name: Optional[str] = None) -> None:
+        """
+        Clear document cache to free memory.
+
+        This method clears the in-memory document cache, either for a specific collection
+        or for all collections. It also triggers Python's garbage collector to help
+        free up memory.
+
+        Args:
+            collection_name (Optional[str]): The name of a specific collection's cache to clear.
+                                            If None, clears the entire cache.
+        """
+        try:
+            if collection_name:
+                # Clear cache for a specific collection
+                removed_docs = self.document_cache.pop(collection_name, None)
+                removed_timestamp = self.cache_timestamps.pop(collection_name, None)
+                
+                if removed_docs is not None or removed_timestamp is not None:
+                    self.logger.debug(f"Cleared cache for collection '{collection_name}'.")
+                else:
+                    self.logger.debug(f"No cache found for collection '{collection_name}' to clear.")
+            else:
+                # Clear the entire cache
+                cache_size_before = len(self.document_cache)
+                self.document_cache.clear()
+                self.cache_timestamps.clear()
+                self.logger.info(f"Cleared entire document cache ({cache_size_before} entries).")
+
+        except Exception as e:
+            # Log any unexpected errors during cache clearing
+            error_msg = f"Error occurred while clearing document cache: {e}"
+            self.logger.error(error_msg, exc_info=True)
+
+
+        finally:
+            # Always attempt to run garbage collection after cache manipulation
+            try:
+                import gc
+                collected = gc.collect()
+                if collected > 0:
+                    self.logger.debug(f"Garbage collector freed {collected} objects after cache clear.")
+            except Exception as gc_error:
+                self.logger.warning(f"Error during garbage collection after cache clear: {gc_error}")
+
         
     def _setup_logger(self) -> None:
-        logger = logging.getLogger(self.__class__.__name__)
+        """
+        Sets up the internal logger for the CoreRAGEngine instance.
 
-        # Only add handler if none exist to avoid duplicate logs
-        if not logger.hasHandlers():
-            handler = logging.StreamHandler()
-            fmt = "%(asctime)s %(name)s %(levelname)s %(message)s"
-            handler.setFormatter(logging.Formatter(fmt))
-            logger.addHandler(handler)
+        This method creates a logger named after the class, adds a StreamHandler
+        if one doesn't already exist (to prevent duplicate logs), configures
+        a standard format, and sets the logging level to INFO.
+        """
+        try:
+            # Create a logger specific to this class instance
+            logger = logging.getLogger(self.__class__.__name__)
 
-        logger.setLevel(logging.INFO)
-        self.logger = logger
+            if not logger.hasHandlers():
+                try:
+                    # Create a console handler
+                    handler = logging.StreamHandler()
 
-    def _get_persist_dir(self, collection_name: str) -> str: # Helper method if not already present
-        """Returns the specific persistence directory for a given collection name."""
-        return os.path.join(self.persist_directory_base, collection_name)
+                    # Define a standard log format
+                    log_format = "%(asctime)s %(name)s %(levelname)s %(message)s"
+                    formatter = logging.Formatter(log_format)
+
+                    handler.setFormatter(formatter)
+                    logger.addHandler(handler)
+
+                except Exception as handler_error:
+                    print(f"Warning: Could not configure custom handler for logger '{self.__class__.__name__}': {handler_error}")
+
+            logger.setLevel(logging.INFO)
+            self.logger = logger
+
+        except Exception as e:
+            error_message = f"Critical error setting up logger: {e}"
+            print(f"ERROR: {error_message}")
+
+ 
+    def _get_persist_dir(self, collection_name: str) -> str:
+        """
+        Generates the specific persistence directory path for a given collection.
+
+        This helper method constructs the full path where a Chroma vector store
+        collection will be persisted on disk, based on the engine's base persist
+        directory and the collection's name.
+
+        Args:
+            collection_name (str): The name of the collection.
+
+        Returns:
+            str: The full path to the collection's persistence directory.
+
+        Raises:
+            ValueError: If `collection_name` is None or an empty string.
+            TypeError: If `collection_name` is not a string.
+        """
+        # --- Input Validation ---
+        if not isinstance(collection_name, str):
+            error_msg = f"collection_name must be a string, got {type(collection_name).__name__}"
+            self.logger.error(error_msg)
+            raise TypeError(error_msg)
+        
+        if not collection_name:
+            error_msg = "collection_name cannot be None or empty"
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        # --- Path Construction ---
+        try:
+            persist_dir = os.path.join(self.persist_directory_base, collection_name)
+            return persist_dir
+        except Exception as e:
+            error_msg = f"Failed to construct persist directory path for collection '{collection_name}': {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
 
     def _init_or_load_vectorstore(self, collection_name: str, recreate: bool = False) -> None:
         """
         Initializes an in-memory reference to a vector store, loading it from disk
         if it exists and is not being recreated, or preparing for a new one.
         Ensures the retriever is set up with the current engine's default_retrieval_top_k.
+
+        This method manages the lifecycle of a Chroma vector store collection:
+        - If `recreate` is True, it removes any existing persisted data.
+        - If the collection exists on disk and `recreate` is False, it loads it.
+        - If the collection is already in memory and valid, it ensures the retriever is correctly configured.
+        - If the collection doesn't exist, it prepares for future creation upon indexing.
+
+        Args:
+            collection_name (str): The name of the collection to initialize or load.
+            recreate (bool): If True, forces the removal of any existing persisted collection
+                            data before proceeding. Defaults to False.
         """
-        persist_dir = self._get_persist_dir(collection_name)
+        try:
+            # --- Determine Persistence Directory ---
+            persist_dir = self._get_persist_dir(collection_name)
 
-        # If collection already exists in memory and we're not recreating it
-        if collection_name in self.vectorstores and not recreate:
-            self._handle_existing_collection_in_memory(collection_name)
-            return
+            # --- Handle Recreation ---
+            if recreate:
+                self._handle_recreate_collection(collection_name, persist_dir)
+                return
 
-        # Handle recreation case
-        if recreate:
-            self._handle_recreate_collection(collection_name, persist_dir)
-            return
+            # --- Handle Existing In-Memory Collection ---
+            if collection_name in self.vectorstores:
+                self._handle_existing_collection_in_memory(collection_name)
+                return
 
-        # If not in memory and not recreating, try to load from disk
-        self._handle_load_from_disk(collection_name, persist_dir)
+            # If not in memory and not recreating, attempt to load from persisted storage.
+            self._handle_load_from_disk(collection_name, persist_dir)
+
+        except Exception as e:
+            error_msg = f"Critical error in _init_or_load_vectorstore for '{collection_name}': {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
 
 
     def _handle_existing_collection_in_memory(self, collection_name: str) -> None:
-        """Handle case where collection exists in memory and we're not recreating."""
-        # Get current k value based on retriever type (using safe access)
-        current_k = None
-        retriever = self.retrievers.get(collection_name)
-        
-        if retriever:
-            if hasattr(retriever, 'k'):
-                current_k = retriever.k
-            elif hasattr(retriever, 'search_kwargs'):
-                current_k = retriever.search_kwargs.get('k')
+        """
+        Handle the case where a collection already exists in memory and we're not recreating it.
 
-        # Check if the retriever needs to be created or re-configured (e.g., k changed)
-        if collection_name not in self.retrievers or current_k != self.default_retrieval_top_k:
-            self._setup_retriever_for_collection(collection_name)
-            self.logger.info(f"Retriever for collection '{collection_name}' configured with k={self.default_retrieval_top_k}")
+        This method checks if the associated retriever for the in-memory collection
+        needs to be created or re-configured, for example, if the desired number of
+        retrieved documents (`k`) has changed since the last setup.
+
+        Args:
+            collection_name (str): The name of the collection to handle.
+        """
+        try:
+            # --- Determine Current Retriever Configuration ---
+            current_k = None
+            retriever = self.retrievers.get(collection_name)
+
+            # Safely extract the current 'k' value from the retriever, if it exists
+            if retriever:
+                try:
+                    if hasattr(retriever, 'k'):
+                        current_k = retriever.k
+                    elif hasattr(retriever, 'search_kwargs'):
+                        current_k = retriever.search_kwargs.get('k')
+                except Exception as attr_error:
+                    self.logger.warning(f"Could not determine current 'k' for retriever of collection '{collection_name}': {attr_error}")
+
+            # --- Check if Retriever Needs Update ---
+            # A retriever needs to be set up if:
+            # 1. It doesn't exist for this collection, or
+            # 2. Its 'k' value doesn't match the engine's current default
+            needs_retriever_setup = (collection_name not in self.retrievers or current_k != self.default_retrieval_top_k)
+
+            if needs_retriever_setup:
+                try:
+                    self._setup_retriever_for_collection(collection_name)
+                    self.logger.info(f"Retriever for collection '{collection_name}' configured or re-configured with k={self.default_retrieval_top_k}")
+                except Exception as setup_error:
+                    error_msg = f"Failed to set up retriever for existing in-memory collection '{collection_name}': {setup_error}"
+                    self.logger.error(error_msg, exc_info=True)
+
+        except Exception as e:
+            error_msg = f"Unexpected error in _handle_existing_collection_in_memory for '{collection_name}': {e}"
+            self.logger.error(error_msg, exc_info=True)
 
 
     def _handle_recreate_collection(self, collection_name: str, persist_dir: str) -> None:
-        """Handle recreation of collection - remove existing data."""
-        self.logger.info(f"Recreating collection '{collection_name}'. Removing existing if present.")
-        if os.path.exists(persist_dir):
-            shutil.rmtree(persist_dir)
-        if collection_name in self.vectorstores:
-            del self.vectorstores[collection_name]
-        if collection_name in self.retrievers:
-            del self.retrievers[collection_name]
+        """
+        Handle recreation of a collection by removing existing data.
+
+        This method is responsible for the clean slate preparation when a collection
+        needs to be recreated. It removes any persisted data on disk and clears
+        references to the collection from the engine's in-memory stores.
+
+        Args:
+            collection_name (str): The name of the collection to recreate.
+            persist_dir (str): The full path to the collection's persistence directory.
+        """
+        try:
+            self.logger.info(f"Recreating collection '{collection_name}'. Removing existing data if present.")
+
+            # If a persistence directory exists for this collection, remove it entirely.
+            if os.path.exists(persist_dir):
+                try:
+                    shutil.rmtree(persist_dir)
+                    self.logger.debug(f"Removed persisted data directory: {persist_dir}")
+                except OSError as os_error:
+                    self.logger.error(f"OS error removing persisted directory '{persist_dir}': {os_error}")
+                    raise RuntimeError(f"Failed to remove persisted directory '{persist_dir}'") from os_error
+                except Exception as remove_error:
+                    self.logger.critical(f"Unexpected error removing persisted directory '{persist_dir}': {remove_error}", exc_info=True)
+                    raise RuntimeError(f"Failed to remove persisted directory '{persist_dir}'") from remove_error
+
+            # Remove the vectorstore object reference if it exists in memory.
+            if collection_name in self.vectorstores:
+                removed_vs = self.vectorstores.pop(collection_name, None)
+                if removed_vs:
+                    self.logger.debug(f"Removed in-memory vectorstore reference for '{collection_name}'.")
+
+            # Remove the retriever object reference if it exists in memory.
+            if collection_name in self.retrievers:
+                removed_retriever = self.retrievers.pop(collection_name, None)
+                if removed_retriever:
+                    self.logger.debug(f"Removed in-memory retriever reference for '{collection_name}'.")
+
+            self.logger.info(f"Completed recreation preparation for collection '{collection_name}'.")
+
+        except Exception as e:
+            error_msg = f"Unexpected error in _handle_recreate_collection for '{collection_name}': {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
 
 
     def _handle_load_from_disk(self, collection_name: str, persist_dir: str) -> None:
-        """Handle loading collection from disk if it exists."""
-        if os.path.exists(persist_dir):
-            try:
-                self.logger.info(f"Loading existing vector store '{collection_name}' from {persist_dir}")
-                self.vectorstores[collection_name] = Chroma(collection_name=collection_name,
-                                                            embedding_function=self.embedding_model,
-                                                            persist_directory=persist_dir)
+        """
+        Handle loading a collection from disk if it exists.
 
-                # After loading from disk, immediately set up the correct retriever
-                self._setup_retriever_for_collection(collection_name)
-                self.logger.info(f"Successfully loaded '{collection_name}' with k={self.default_retrieval_top_k}.")
-            except Exception as e:
-                self.logger.error(f"Error loading vector store '{collection_name}' from {persist_dir}: {e}. A new one may be created if documents are indexed.", exc_info=True)
-                if collection_name in self.vectorstores:
-                    del self.vectorstores[collection_name]
-                if collection_name in self.retrievers:
-                    del self.retrievers[collection_name]
-        else:
-            self.logger.info(f"No persisted vector store found for '{collection_name}' at {persist_dir}. It will be created upon first indexing.")
+        This method attempts to load a Chroma vector store collection from its
+        persisted directory. If successful, it also sets up the corresponding
+        retriever. If the directory doesn't exist or loading fails, it logs
+        appropriate messages.
+
+        Args:
+            collection_name (str): The name of the collection to load.
+            persist_dir (str): The full path to the collection's persistence directory.
+        """
+        try:
+            if os.path.exists(persist_dir):
+                try:
+                    self.logger.info(f"Attempting to load existing vector store '{collection_name}' from {persist_dir}")
+                    
+                    # Create the Chroma vector store instance by loading from persistence
+                    loaded_vectorstore = Chroma(collection_name=collection_name,
+                                                embedding_function=self.embedding_model,
+                                                persist_directory=persist_dir)
+                    
+                    # Store the loaded vector store in the engine's memory
+                    self.vectorstores[collection_name] = loaded_vectorstore
+
+                    # After successfully loading from disk, set up the correct retriever
+                    self._setup_retriever_for_collection(collection_name)
+                    
+                    self.logger.info(f"Successfully loaded vector store '{collection_name}' from disk and configured retriever with k={self.default_retrieval_top_k}.")
+
+                except Exception as load_error:
+                    error_msg = (f"Error loading vector store '{collection_name}' from {persist_dir}: {load_error}. A new one may be created if documents are indexed.")
+                    self.logger.error(error_msg, exc_info=True)
+                    self.vectorstores.pop(collection_name, None)
+                    self.retrievers.pop(collection_name, None)
+
+            else:
+                self.logger.info(
+                    f"No persisted vector store found for '{collection_name}' at {persist_dir}. "
+                    f"It will be created upon first indexing.")
+
+        except Exception as e:
+            error_msg = f"Unexpected error in _handle_load_from_disk for '{collection_name}': {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
 
 
     def _setup_retriever_for_collection(self, collection_name: str) -> None:
-        """Set up the appropriate retriever (hybrid or standard) for a collection."""
-        if self.enable_hybrid_search:
-            # Create hybrid retriever
-            try:
-                all_docs = self._get_all_documents_from_collection(collection_name)
-                if all_docs:
-                    self.retrievers[collection_name] = AdaptiveHybridRetriever(vector_store=self.vectorstores[collection_name],
-                                                                               documents=all_docs,
-                                                                               k=self.default_retrieval_top_k)
+        """
+        Set up the appropriate retriever (hybrid or standard) for a collection.
 
-                    self.logger.info(f"Created hybrid retriever for collection '{collection_name}' with k={self.default_retrieval_top_k}")
-                else:
-                    # Fallback to standard retriever if no docs are found for BM25
-                    self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
-                        search_kwargs={'k': self.default_retrieval_top_k}
+        This method configures the retriever used for document retrieval for a given
+        collection. If hybrid search is enabled, it attempts to create a hybrid
+        retriever. Otherwise, it falls back to a standard Chroma retriever.
+
+        Args:
+            collection_name (str): The name of the collection to set up the retriever for.
+        """
+        try:
+            vectorstore = self.vectorstores.get(collection_name)
+            if not vectorstore:
+                error_msg = f"Cannot set up retriever: Vectorstore for '{collection_name}' not found in memory."
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
+
+            if self.enable_hybrid_search:
+                self.logger.debug(f"Setting up hybrid retriever for collection '{collection_name}'...")
+                try:
+                    # Hybrid retrievers often need all documents for BM25 part
+                    all_docs = self._get_all_documents_from_collection(collection_name)
+
+                    if all_docs:
+                        # Create the hybrid retriever with the required documents and k
+                        hybrid_retriever = AdaptiveHybridRetriever(vector_store=vectorstore,
+                                                                   documents=all_docs,
+                                                                   k=self.default_retrieval_top_k)
+
+                        self.retrievers[collection_name] = hybrid_retriever
+                        self.logger.info(f"Successfully created hybrid retriever for collection '{collection_name}' with k={self.default_retrieval_top_k}")
+                    else:
+                        # Fallback: If no docs are found (e.g., empty collection), use standard retriever
+                        self.logger.warning(
+                            f"Could not create hybrid retriever for '{collection_name}' (no documents found), "
+                            f"falling back to standard retriever with k={self.default_retrieval_top_k}"
                         )
-                    self.logger.warning(f"Could not create hybrid retriever for '{collection_name}' (no documents found), using standard retriever")
-            except Exception as e:
-                self.logger.warning(f"Failed to create hybrid retriever: {e}, using standard retriever")
-                self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
-                    search_kwargs={'k': self.default_retrieval_top_k}
-                )
-        else:
-            # Standard retriever
-            self.retrievers[collection_name] = self.vectorstores[collection_name].as_retriever(
-                search_kwargs={'k': self.default_retrieval_top_k}
-            )
+                        standard_retriever = vectorstore.as_retriever(search_kwargs={'k': self.default_retrieval_top_k})
+                        self.retrievers[collection_name] = standard_retriever
+
+                except Exception as hybrid_error:
+                    self.logger.warning(
+                        f"Failed to create hybrid retriever for '{collection_name}': {hybrid_error}. "
+                        f"Falling back to standard retriever with k={self.default_retrieval_top_k}",
+                        exc_info=True
+                    )
+                    
+                    # Fallback to standard retriever if hybrid creation fails
+                    standard_retriever = vectorstore.as_retriever(search_kwargs={'k': self.default_retrieval_top_k})
+                    self.retrievers[collection_name] = standard_retriever
+
+            # --- Standard Retriever Setup ---
+            else:
+                self.logger.debug(f"Setting up standard retriever for collection '{collection_name}'...")
+                standard_retriever = vectorstore.as_retriever(search_kwargs={'k': self.default_retrieval_top_k})
+                self.retrievers[collection_name] = standard_retriever
+                self.logger.debug(f"Standard retriever set up for '{collection_name}' with k={self.default_retrieval_top_k}")
+
+        except Exception as e:
+            error_msg = f"Unexpected error in _setup_retriever_for_collection for '{collection_name}': {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
 
     def _init_llm(self, use_json_format: bool) -> Any:
-        """Initialize LLM based on configured provider."""
-        provider = self.llm_provider.lower()
-        
-        if provider == "openai":
-            return self._init_openai_llm(use_json_format)
-        if provider == "ollama":
-            return self._init_ollama_llm(use_json_format)
-        if provider == "google":
-            return self._init_google_llm(use_json_format)
-        
-        raise ValueError(f"Unsupported LLM provider: {provider}")
+        try:
+            provider = self.llm_provider.lower()
+
+            if provider == "openai":
+                return self._init_openai_llm(use_json_format)
+            if provider == "ollama":
+                return self._init_ollama_llm(use_json_format)
+            if provider == "google":
+                return self._init_google_llm(use_json_format)
+
+            error_msg = f"Unsupported LLM provider configured: '{self.llm_provider}'"
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
+        except Exception as e:
+            error_msg = f"Critical error initializing LLM (Provider: {self.llm_provider}, JSON: {use_json_format}): {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
 
     def _init_openai_llm(self, use_json: bool) -> ChatOpenAI:
-        """Initialize OpenAI LLM with optional JSON formatting."""
-        self._validate_openai_api_key()
-        args = self._build_openai_config(use_json)
-        return ChatOpenAI(**args)
+        try:
+            self._validate_openai_api_key()
+
+            # Build the configuration dictionary for the OpenAI LLM
+            openai_config = self._build_openai_config(use_json)
+
+            openai_llm = ChatOpenAI(**openai_config)
+            self.logger.info(f"OpenAI LLM '{self.llm_model_name}' initialized successfully (JSON: {use_json}).")
+            return openai_llm
+        except Exception as e:
+            error_msg = f"Failed to initialize OpenAI LLM '{self.llm_model_name}': {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
 
     def _init_ollama_llm(self, use_json: bool) -> ChatOllama:
-        """Initialize Ollama LLM with optional JSON formatting."""
-        format_type = self._get_ollama_format(use_json)
-        return ChatOllama(model=self.llm_model_name,
-                          temperature=self.temperature,
-                          format=format_type)
+
+        try:
+            format_type = self._get_ollama_format(use_json)
+            ollama_llm = ChatOllama(model=self.llm_model_name,
+                                    temperature=self.temperature,
+                                    format=format_type)
+            self.logger.info(f"Ollama LLM '{self.llm_model_name}' initialized successfully (JSON: {use_json}, Format: {format_type}).")
+            return ollama_llm
+        except Exception as e:
+            error_msg = f"Failed to initialize Ollama LLM '{self.llm_model_name}': {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
 
     def _init_google_llm(self, use_json: bool) -> ChatGoogleGenerativeAI:
-        """Initialize Google Generative AI LLM with optional JSON formatting."""
-        self._validate_google_api_key()
-        kwargs = self._build_google_config(use_json)
-        return ChatGoogleGenerativeAI(**kwargs)
+        try:
+            self._validate_google_api_key()
+
+            # Build the configuration dictionary for the Google LLM
+            google_config = self._build_google_config(use_json)
+
+            google_llm = ChatGoogleGenerativeAI(**google_config)
+            self.logger.info(f"Google LLM '{self.llm_model_name}' initialized successfully (JSON: {use_json}).")
+            return google_llm
+        except Exception as e:
+            error_msg = f"Failed to initialize Google LLM '{self.llm_model_name}': {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
 
     def _validate_openai_api_key(self) -> None:
-        """Validate that OpenAI API key is present."""
-        if not self.openai_api_key:
-            self.logger.error("OPENAI_API_KEY missing")
-            raise ValueError("OPENAI_API_KEY is required")
+        try:
+            if not self.openai_api_key:
+                error_msg = "OPENAI_API_KEY is missing or empty. It is required for OpenAI LLM/embedding operations."
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
+            else:
+                self.logger.debug("OpenAI API key validation successful.")
+        except Exception as e:
+            error_msg = f"Unexpected error during OpenAI API key validation: {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
 
     def _validate_google_api_key(self) -> None:
-        """Validate that Google API key is present."""
-        if not self.google_api_key:
-            self.logger.error("GOOGLE_API_KEY missing")
-            raise ValueError("GOOGLE_API_KEY is required")
+        try:
+            if not self.google_api_key:
+                error_msg = "GOOGLE_API_KEY is missing or empty. It is required for Google LLM/embedding operations."
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
+            else:
+                self.logger.debug("Google API key validation successful.")
+        except Exception as e:
+            error_msg = f"Unexpected error during Google API key validation: {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
 
     def _build_openai_config(self, use_json: bool) -> Dict[str, Any]:
-        """Build configuration dictionary for OpenAI LLM."""
-        args: Dict[str, Any] = {"model": self.llm_model_name,
-                                "temperature": self.temperature,
-                                "openai_api_key": self.openai_api_key}
-        
-        if use_json:
-            args["model_kwargs"] = {"response_format": {"type": "json_object"}}
-            self.logger.info(f"JSON mode enabled for {self.llm_model_name}")
-        
-        return args
+        try:
+            config_args: Dict[str, Any] = {"model": self.llm_model_name,
+                                           "temperature": self.temperature,
+                                           "openai_api_key": self.openai_api_key}
+
+            # Add JSON formatting configuration if requested
+            if use_json:
+                config_args["model_kwargs"] = {"response_format": {"type": "json_object"}}
+                self.logger.info(f"JSON response format enabled for OpenAI model '{self.llm_model_name}'.")
+
+            self.logger.debug(f"OpenAI config built successfully: {config_args}")
+            return config_args
+
+        except Exception as e:
+            error_msg = f"Failed to build OpenAI configuration: {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
 
     def _build_google_config(self, use_json: bool) -> Dict[str, Any]:
-        """Build configuration dictionary for Google Generative AI LLM."""
-        kwargs: Dict[str, Any] = {"model": self.llm_model_name,
-                                  "temperature": self.temperature,
-                                  "google_api_key": self.google_api_key,
-                                  "convert_system_message_to_human": True}
-        
-        if use_json:
-            kwargs["model_kwargs"] = {"response_mime_type": "application/json"}
-            self.logger.info(f"JSON mode enabled for Google model {self.llm_model_name}")
-        
-        return kwargs
+        try:
+            # Initialize the base configuration dictionary
+            config_kwargs: Dict[str, Any] = {"model": self.llm_model_name,
+                                             "temperature": self.temperature,
+                                             "google_api_key": self.google_api_key,
+                                             "convert_system_message_to_human": True}
 
+            # Add JSON formatting configuration if requested
+            if use_json:
+                config_kwargs["model_kwargs"] = {"response_mime_type": "application/json"}
+                self.logger.info(f"JSON response format enabled for Google model '{self.llm_model_name}'.")
+
+            self.logger.debug(f"Google config built successfully: {config_kwargs}")
+            return config_kwargs
+
+        except Exception as e:
+            error_msg = f"Failed to build Google configuration: {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+    
+    
     def _get_ollama_format(self, use_json: bool) -> Optional[str]:
-        """Get format parameter for Ollama LLM."""
-        return "json" if use_json else None
+        try:
+            # Determine the format string based on the use_json flag
+            format_param = "json" if use_json else None
+            self.logger.debug(f"Ollama format parameter determined: {format_param} (use_json: {use_json})")
+            return format_param
+        except Exception as e:
+            error_msg = f"Unexpected error determining Ollama format parameter: {e}"
+            self.logger.error(error_msg, exc_info=True)
+            return None
         
+
     def _init_embedding_model(self) -> Any:
-        """Initialize embedding model based on configured provider."""
-        provider = self.embedding_provider.lower()
-        
-        if provider == "openai":
-            return self._init_openai_embeddings()
-        if provider == "gpt4all":
-            return self._init_gpt4all_embeddings()
-        if provider == "google":
-            return self._init_google_embeddings()
-        
-        raise ValueError(f"Unsupported embedding provider: {provider}")
+        try:
+            provider = self.embedding_provider.lower()
+
+            if provider == "openai":
+                return self._init_openai_embeddings()
+            if provider == "gpt4all":
+                return self._init_gpt4all_embeddings()
+            if provider == "google":
+                return self._init_google_embeddings()
+
+            error_msg = f"Unsupported embedding provider configured: '{self.embedding_provider}'"
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        except Exception as e:
+            error_msg = f"Critical error initializing embedding model (Provider: {self.embedding_provider}): {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
 
     def _init_openai_embeddings(self) -> OpenAIEmbeddings:
-        """Initialize OpenAI embeddings model."""
-        self._validate_openai_embedding_key()
-        model = self._get_openai_embedding_model()
-        return OpenAIEmbeddings(openai_api_key=self.openai_api_key, model=model)
+        try:
+            self._validate_openai_embedding_key()
+            model_name = self._get_openai_embedding_model()
+            openai_embeddings = OpenAIEmbeddings(openai_api_key=self.openai_api_key, model=model_name)
+            self.logger.info(f"OpenAI Embeddings model '{model_name}' initialized successfully.")
+            return openai_embeddings
+        except Exception as e:
+            error_msg = f"Failed to initialize OpenAI Embeddings model '{self.embedding_model_name}': {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
 
     def _init_gpt4all_embeddings(self) -> GPT4AllEmbeddings:
-        """Initialize GPT4All embeddings model."""
-        return GPT4AllEmbeddings()
+        try:
+            gpt4all_embeddings = GPT4AllEmbeddings()
+            self.logger.info("GPT4All Embeddings model initialized successfully.")
+            return gpt4all_embeddings
+        except Exception as e:
+            error_msg = f"Failed to initialize GPT4All Embeddings model: {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
 
     def _init_google_embeddings(self) -> GoogleGenerativeAIEmbeddings:
-        """Initialize Google Generative AI embeddings model."""
-        self._validate_google_embedding_key()
-        model = self._get_google_embedding_model()
-        return GoogleGenerativeAIEmbeddings(model=model, google_api_key=self.google_api_key)
+        try:
+            self._validate_google_embedding_key()
+            model_name = self._get_google_embedding_model()
+            google_embeddings = GoogleGenerativeAIEmbeddings(model=model_name, google_api_key=self.google_api_key)
+            self.logger.info(f"Google Embeddings model '{model_name}' initialized successfully.")
+            return google_embeddings
 
-    def _init_text_splitter(self) -> BaseChunker:
-        """
-        Initialize text splitter based on configuration
-        """
-        strategy = getattr(app_settings.engine, 'chunking_strategy', 'adaptive')
-        
-        if strategy == "adaptive":
-            return self._create_adaptive_splitter()
-        elif strategy == "semantic" and self.openai_api_key:
-            return self._create_semantic_splitter()
-        elif strategy == "hybrid":
-            return self._create_hybrid_splitter()
-        else:
-            return self._create_default_splitter()
+        except Exception as e:
+            error_msg = f"Failed to initialize Google Embeddings model '{self.embedding_model_name}': {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
+
+    def _init_text_splitter(self) -> BaseChunker: 
+        try:
+            # Get the configured chunking strategy, defaulting to 'adaptive'
+            strategy = getattr(app_settings.engine, 'chunking_strategy', 'adaptive')
+            self.logger.debug(f"Initializing text splitter with strategy: '{strategy}'")
+
+            if strategy == "adaptive":
+                return self._create_adaptive_splitter()
+            elif strategy == "semantic" and self.openai_api_key:
+                return self._create_semantic_splitter()
+            elif strategy == "hybrid":
+                return self._create_hybrid_splitter()
+            else:
+                # Fallback to default splitter for unknown strategies or missing API key for semantic
+                self.logger.info(f"Falling back to default splitter for strategy: '{strategy}'")
+                return self._create_default_splitter()
+
+        except Exception as e:
+            error_msg = f"Critical error initializing text splitter (Strategy: {getattr(app_settings.engine, 'chunking_strategy', 'N/A')}): {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
 
     def _validate_openai_embedding_key(self) -> None:
-        """Validate that OpenAI API key is present for embeddings."""
-        if not self.openai_api_key:
-            self.logger.error("OPENAI_API_KEY missing for embeddings")
-            raise ValueError("OPENAI_API_KEY is required for embeddings")
+        try:
+            if not self.openai_api_key:
+                error_msg = "OPENAI_API_KEY is missing or empty. It is required for OpenAI embedding operations."
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
+            else:
+                self.logger.debug("OpenAI API key validation for embeddings successful.")
+        except Exception as e:
+            error_msg = f"Unexpected error during OpenAI embedding API key validation: {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
 
     def _validate_google_embedding_key(self) -> None:
-        """Validate that Google API key is present for embeddings."""
-        if not self.google_api_key:
-            self.logger.error("GOOGLE_API_KEY missing for embeddings")
-            raise ValueError("GOOGLE_API_KEY is required for embeddings")
+        try:
+            if not self.google_api_key:
+                error_msg = "GOOGLE_API_KEY is missing or empty. It is required for Google embedding operations."
+                self.logger.error(error_msg)
+                raise ValueError(error_msg)
+            else:
+                self.logger.debug("Google API key validation for embeddings successful.")
+        except Exception as e:
+            error_msg = f"Unexpected error during Google embedding API key validation: {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
 
     def _get_openai_embedding_model(self) -> str:
-        """Get OpenAI embedding model name with fallback."""
-        return self.embedding_model_name or "text-embedding-3-small"
+        try:
+            model_name = self.embedding_model_name or "text-embedding-3-small"
+            self.logger.debug(f"OpenAI embedding model determined: '{model_name}' (Configured: '{self.embedding_model_name}')")
+            return model_name
+        except Exception as e:
+            error_msg = f"Unexpected error determining OpenAI embedding model: {e}"
+            self.logger.error(error_msg, exc_info=True)
+            return "text-embedding-3-small"
+
 
     def _get_google_embedding_model(self) -> str:
-        """Get Google embedding model name with fallback."""
-        return self.embedding_model_name or "models/embedding-001"
+        try:
+            model_name = self.embedding_model_name or "models/embedding-001"
+            self.logger.debug(f"Google embedding model determined: '{model_name}' (Configured: '{self.embedding_model_name}')")
+            return model_name
+        except Exception as e:
+            error_msg = f"Unexpected error determining Google embedding model: {e}"
+            self.logger.error(error_msg, exc_info=True)
+            return "models/embedding-001"
 
     def _create_adaptive_splitter(self) -> AdaptiveChunker:
-        """Create adaptive chunker with configuration."""
-        return AdaptiveChunker(
-            chunk_size=self.chunk_size,
-            chunk_overlap=self.chunk_overlap,
-            openai_api_key=self.openai_api_key,
-            model_name=self.llm_model_name
-        )
+        """
+        Create adaptive chunker with configuration.
+
+        This method instantiates an AdaptiveChunker with the engine's configured
+        chunk size, overlap, and API key.
+
+        Returns:
+            AdaptiveChunker: An instance of the AdaptiveChunker.
+        """
+        try:
+            adaptive_splitter = AdaptiveChunker(chunk_size=self.chunk_size,
+                                                chunk_overlap=self.chunk_overlap,
+                                                openai_api_key=self.openai_api_key,
+                                                model_name=self.llm_model_name)
+            self.logger.info(f"AdaptiveChunker created successfully with chunk_size={self.chunk_size}, chunk_overlap={self.chunk_overlap}")
+            return adaptive_splitter
+        except Exception as e:
+            error_msg = f"Failed to create AdaptiveChunker: {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
 
     def _create_semantic_splitter(self) -> BaseChunker:
-        """Create semantic chunker with fallback to adaptive."""
+        """
+        Create semantic chunker with fallback to adaptive.
+
+        This method attempts to instantiate a SemanticChunker using OpenAI embeddings.
+        If the required dependencies are not available, it falls back to creating
+        an AdaptiveChunker.
+
+        Returns:
+            BaseChunker: An instance of the SemanticChunker or a fallback AdaptiveChunker.
+        """
         try:
             from langchain_experimental.text_splitter import SemanticChunker
+            
+            # Get the threshold type from config, defaulting to 'percentile'
+            threshold_type = getattr(app_settings.engine, 'semantic_chunking_threshold', 'percentile')
+            
             embeddings = OpenAIEmbeddings(openai_api_key=self.openai_api_key)
-            return SemanticChunker(
-                embeddings=embeddings,
-                breakpoint_threshold_type=getattr(app_settings.engine, 'semantic_chunking_threshold', 'percentile')
-            )
-        except ImportError:
-            self.logger.warning("SemanticChunker not available, falling back to adaptive")
-            return AdaptiveChunker(
-                chunk_size=self.chunk_size,
-                chunk_overlap=self.chunk_overlap,
-                openai_api_key=self.openai_api_key
-            )
+            
+            semantic_splitter = SemanticChunker(embeddings=embeddings, breakpoint_threshold_type=threshold_type)
+            self.logger.info(f"SemanticChunker created successfully with threshold_type='{threshold_type}'.")
+            return semantic_splitter
+
+        except ImportError as import_error:
+            warning_msg = f"SemanticChunker not available (ImportError: {import_error}), falling back to AdaptiveChunker."
+            self.logger.warning(warning_msg)
+            return self._create_adaptive_splitter()
+        except Exception as e:
+            error_msg = f"Failed to create SemanticChunker, falling back to AdaptiveChunker: {e}"
+            self.logger.warning(error_msg, exc_info=True)
+            # Fallback to AdaptiveChunker
+            return self._create_adaptive_splitter()
 
     def _create_hybrid_splitter(self) -> HybridChunker:
-        """Create hybrid chunker with primary and secondary splitters."""
-        primary = AdaptiveChunker(
-            chunk_size=self.chunk_size,
-            chunk_overlap=self.chunk_overlap,
-            openai_api_key=self.openai_api_key
-        )
-        
-        secondary = RecursiveCharacterTextSplitter(
-            chunk_size=self.chunk_size // 2,
-            chunk_overlap=self.chunk_overlap // 2,
-            length_function=len,
-        )
-        
-        return HybridChunker(primary, secondary)
+        """
+        Create hybrid chunker with primary and secondary splitters.
+
+        This method creates a HybridChunker that uses an AdaptiveChunker as the primary
+        splitter and a RecursiveCharacterTextSplitter as the secondary splitter.
+
+        Returns:
+            HybridChunker: An instance of the HybridChunker.
+        """
+        try:
+            # Create the primary splitter (AdaptiveChunker)
+            primary_splitter = self._create_adaptive_splitter()
+            
+            # Create the secondary splitter (RecursiveCharacterTextSplitter with smaller chunks)
+            secondary_splitter = RecursiveCharacterTextSplitter(chunk_size=self.chunk_size // 2,
+                                                                chunk_overlap=self.chunk_overlap // 2,
+                                                                length_function=len)
+            
+            hybrid_splitter = HybridChunker(primary_splitter, secondary_splitter)
+            self.logger.info(
+                f"HybridChunker created successfully with primary (Adaptive) and secondary (Recursive, "
+                f"chunk_size={self.chunk_size // 2}, chunk_overlap={self.chunk_overlap // 2}).")
+            return hybrid_splitter
+
+        except Exception as e:
+            error_msg = f"Failed to create HybridChunker: {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
 
     def _create_default_splitter(self) -> RecursiveCharacterTextSplitter:
-        """Create default recursive character splitter with tiktoken support."""
-        use_tok = tiktoken is not None and self.llm_provider.lower() == "openai"
-        
-        if use_tok:
-            try:
-                return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
-                    model_name=self.llm_model_name,
-                    chunk_size=self.chunk_size,
-                    chunk_overlap=self.chunk_overlap,
-                )
-            except Exception:
-                self.logger.warning("Tiktoken splitter failed, falling back to default")
+        """
+        Create default recursive character splitter with tiktoken support.
 
-        return RecursiveCharacterTextSplitter(
-            chunk_size=self.chunk_size,
-            chunk_overlap=self.chunk_overlap,
-            length_function=len,
-        )
+        This method creates a RecursiveCharacterTextSplitter. If `tiktoken` is available
+        and the LLM provider is OpenAI, it attempts to create a splitter that uses
+        a Tiktoken encoder for more accurate token-based splitting.
+
+        Returns:
+            RecursiveCharacterTextSplitter: An instance of the text splitter.
+        """
+        try:
+            use_tiktoken = tiktoken is not None and self.llm_provider.lower() == "openai"
+            
+            if use_tiktoken:
+                try:
+                    tiktoken_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(model_name=self.llm_model_name,
+                                                                                             chunk_size=self.chunk_size,
+                                                                                             chunk_overlap=self.chunk_overlap)
+                    self.logger.info(f"Default splitter created with Tiktoken encoder for model '{self.llm_model_name}'.")
+                    return tiktoken_splitter
+                except Exception as tiktoken_error:
+                    self.logger.warning(f"Tiktoken splitter failed (Error: {tiktoken_error}), falling back to default character splitter.")
+            
+            # Create and return the default RecursiveCharacterTextSplitter
+            default_splitter = RecursiveCharacterTextSplitter(chunk_size=self.chunk_size,
+                                                              chunk_overlap=self.chunk_overlap,
+                                                              length_function=len)
+
+            fallback_type = "Tiktoken fallback" if use_tiktoken else "default"
+            self.logger.info(
+                f"Default splitter created ({fallback_type}) with chunk_size={self.chunk_size}, chunk_overlap={self.chunk_overlap}.")
+            return default_splitter
+
+        except Exception as e:
+            error_msg = f"Failed to create default RecursiveCharacterTextSplitter: {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
 
     def _init_search_tool(self) -> Optional[Runnable]:
-        """Initialize Tavily search tool if available."""
+        """
+        Initialize Tavily search tool if available.
+
+        This method attempts to import and instantiate the TavilySearch tool.
+        If the required dependency is not installed, it logs a warning and returns None.
+
+        Returns:
+            Optional[Runnable]: An instance of the TavilySearch tool, or None if unavailable.
+        """
         try:
             from langchain_tavily import TavilySearch
-            return TavilySearch(api_key=self.tavily_api_key, max_results=5)
-        except ImportError:
-            self.logger.warning("langchain-tavily is not installed. Please pip install langchain-tavily")
+            search_tool = TavilySearch(api_key=self.tavily_api_key, max_results=5)
+            self.logger.info("Tavily search tool initialized successfully.")
+            return search_tool
+        except ImportError as import_error:
+            warning_msg = ("langchain-tavily is not installed. Web search functionality will be disabled. ")
+            self.logger.warning(warning_msg)
+            return None
+        except Exception as e:
+            error_msg = f"Failed to initialize Tavily search tool: {e}"
+            self.logger.error(error_msg, exc_info=True)
             return None
 
     def _create_document_relevance_grader_chain(self) -> Runnable:
-        """Create chain for grading document relevance to questions."""
-        parser = PydanticOutputParser(pydantic_object=RelevanceGrade)
-        
-        prompt_template = (
-            "You are a document relevance grader. Your task is to assess if a given document excerpt\n"
-            "is relevant to the provided question.\n\n"
-            "Respond with a JSON object matching this schema:\n"
-            "{format_instructions}\n\n"
-            "Question: {question}\n\n"
-            "Document Excerpt:\n---\n{document_content}\n---\n\n"
-            "Provide your JSON response:"
-        )
-        
-        prompt = ChatPromptTemplate.from_template(
-            template=prompt_template,
-            partial_variables={"format_instructions": parser.get_format_instructions()}
-        )
-        
-        chain = prompt | self.json_llm | PydanticOutputParser(pydantic_object=RelevanceGrade)
-        self.logger.info("Created document_relevance_grader_chain with PydanticOutputParser.")
-        return chain
+        """
+        Create chain for grading document relevance to questions.
 
-    def _create_document_reranker_chain(self) -> Runnable:
-        """Create chain for re-ranking documents by relevance score."""
-        parser = PydanticOutputParser(pydantic_object=RerankScore)
+        This method constructs a LangChain Runnable that takes a question and a document excerpt,
+        and uses a JSON-formatted LLM to assess the document's relevance to the question,
+        returning a structured `RelevanceGrade` object.
 
-        prompt_template = (
-            "You are a document re-ranking expert. Your task is to score a document's relevance "
-            "for directly answering the given question.\n"
-            "Assign a relevance score from 0.0 (not relevant) to 1.0 (perfectly relevant).\n\n"
-            "Respond with a JSON object matching this schema:\n"
-            "{format_instructions}\n\n"
-            "Question: {question}\n\n"
-            "Document Excerpt:\n---\n{document_content}\n---\n\n"
-            "Provide your JSON response:"
-        )
+        Returns:
+            Runnable: A configured chain for document relevance grading.
+        """
+        try:
+            parser = PydanticOutputParser(pydantic_object=RelevanceGrade)
+            prompt_template = (
+                "You are a document relevance grader. Your task is to assess if a given document excerpt "
+                "is relevant to the provided question.\n"
+                "Respond with a JSON object matching this schema:\n"
+                "{format_instructions}\n"
+                "Question: {question}\n"
+                "Document Excerpt:\n---\n{document_content}\n---\n"
+                "Provide your JSON response:"
+            )
+            
+            # Create the prompt template, partially filling in the format instructions
+            prompt = ChatPromptTemplate.from_template(template=prompt_template,
+                                                      partial_variables={"format_instructions": parser.get_format_instructions()})
+            
+            chain = prompt | self.json_llm | PydanticOutputParser(pydantic_object=RelevanceGrade)
 
-        prompt = ChatPromptTemplate.from_template(
-            template=prompt_template,
-            partial_variables={"format_instructions": parser.get_format_instructions()}
-        )
+            self.logger.info("Document relevance grader chain created successfully with PydanticOutputParser.")
+            return chain
 
-        chain = prompt | self.json_llm | PydanticOutputParser(pydantic_object=RerankScore)
-        self.logger.info("Created document_reranker_chain with PydanticOutputParser.")
-        return chain
+        except Exception as e:
+            error_msg = f"Failed to create document relevance grader chain: {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
 
-    def _create_query_analyzer_chain(self) -> Runnable:
-        """Create chain for analyzing user queries."""
-        self.logger.info("Creating query analyzer chain.")
-        parser = PydanticOutputParser(pydantic_object=QueryAnalysis)
+    def _create_document_relevance_grader_chain(self) -> Runnable:
+        """
+        Create chain for grading document relevance to questions.
 
-        prompt_template_str = (
-            "You are an expert query understanding system. Analyze the given 'User Question'. "
-            "Consider the 'Chat History' (if provided) for context, but primarily focus on the current question. "
-            "Your goal is to understand the user's intent, the type of query, extract critical keywords, "
-            "and identify any ambiguities.\n\n"
-            "Respond with a JSON object matching this schema:\n{format_instructions}\n\n"
-            "Chat History (if any):\n{chat_history_formatted}\n\n"
-            "User Question:\n{question}\n\n"
-            "Provide your JSON response:"
-        )
+        This method constructs a LangChain Runnable that takes a question and a document excerpt,
+        and uses a JSON-formatted LLM to assess the document's relevance to the question,
+        returning a structured `RelevanceGrade` object.
 
-        prompt = ChatPromptTemplate.from_template(
-            template=prompt_template_str,
-            partial_variables={"format_instructions": parser.get_format_instructions()}
-        )
+        Returns:
+            Runnable: A configured chain for document relevance grading.
+        """
+        try:
+            parser = PydanticOutputParser(pydantic_object=RelevanceGrade)
+            prompt_template = (
+                "You are a document relevance grader. Your task is to assess if a given document excerpt "
+                "is relevant to the provided question.\n"
+                "Respond with a JSON object matching this schema:\n"
+                "{format_instructions}\n"
+                "Question: {question}\n"
+                "Document Excerpt:\n---\n{document_content}\n---\n"
+                "Provide your JSON response:"
+            )
+            
+            # Create the prompt template, partially filling in the format instructions
+            prompt = ChatPromptTemplate.from_template(template=prompt_template,
+                                                      partial_variables={"format_instructions": parser.get_format_instructions()})
+            
+            chain = prompt | self.json_llm | PydanticOutputParser(pydantic_object=RelevanceGrade)
+            
+            self.logger.info("Document relevance grader chain created successfully with PydanticOutputParser.")
+            return chain
 
-        chain = prompt | self.json_llm | parser 
-        return chain
+        except Exception as e:
+            error_msg = f"Failed to create document relevance grader chain: {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
+    def _create_document_relevance_grader_chain(self) -> Runnable:
+        """
+        Create chain for grading document relevance to questions.
+
+        This method constructs a LangChain Runnable that takes a question and a document excerpt,
+        and uses a JSON-formatted LLM to assess the document's relevance to the question,
+        returning a structured `RelevanceGrade` object.
+
+        Returns:
+            Runnable: A configured chain for document relevance grading.
+        """
+        try:
+            parser = PydanticOutputParser(pydantic_object=RelevanceGrade)
+            prompt_template = (
+                "You are a document relevance grader. Your task is to assess if a given document excerpt "
+                "is relevant to the provided question.\n"
+                "Respond with a JSON object matching this schema:\n"
+                "{format_instructions}\n"
+                "Question: {question}\n"
+                "Document Excerpt:\n---\n{document_content}\n---\n"
+                "Provide your JSON response:"
+            )
+            
+            # Create the prompt template, partially filling in the format instructions
+            prompt = ChatPromptTemplate.from_template(template=prompt_template,
+                                                      partial_variables={"format_instructions": parser.get_format_instructions()})
+            
+            chain = prompt | self.json_llm | PydanticOutputParser(pydantic_object=RelevanceGrade)
+
+            self.logger.info("Document relevance grader chain created successfully with PydanticOutputParser.")
+            return chain
+
+        except Exception as e:
+            error_msg = f"Failed to create document relevance grader chain: {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
 
     def _create_query_rewriter_chain(self) -> Runnable:
-        """Create chain for rewriting queries with chat history context."""
-        self.logger.info("Creating query rewriter chain with chat history support.")
-        system_prompt = (
-            "You are a query optimization assistant. Given 'Chat History' (if any) and "
-            "'Latest User Question', rewrite the question to be clear, specific, and self-contained "
-            "for retrieval. If already clear, return it as is."
-        )
-        
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", system_prompt),
-            MessagesPlaceholder(variable_name="chat_history", optional=True),
-            ("human", "Latest User Question to rewrite:\n{question}")
-        ])
+        """
+        Create chain for rewriting queries with chat history context.
 
-        chain = prompt | self.llm | StrOutputParser()
-        return chain
+        This method constructs a LangChain Runnable that takes a question and optional chat history,
+        and rewrites the question to be clear, specific, and self-contained for retrieval purposes.
+
+        Returns:
+            Runnable: A configured chain for query rewriting.
+        """
+        try:
+            self.logger.info("Creating query rewriter chain with chat history support.")
+            
+            system_prompt = (
+                "You are a query optimization assistant. Given 'Chat History' (if any) and "
+                "'Latest User Question', rewrite the question to be clear, specific, and self-contained "
+                "for retrieval. If already clear, return it as is."
+            )
+            
+            # Create the prompt template using messages for better history handling
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", system_prompt),
+                MessagesPlaceholder(variable_name="chat_history", optional=True),
+                ("human", "Latest User Question to rewrite:\n{question}")
+            ])
+            
+            chain = prompt | self.llm | StrOutputParser()
+  
+            self.logger.info("Query rewriter chain created successfully.")
+            return chain
+
+        except Exception as e:
+            error_msg = f"Failed to create query rewriter chain: {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
 
     def _create_answer_generation_chain(self) -> Runnable:
-        """Create chain for generating answers from context documents."""
-        self.logger.info("Creating answer generation chain with chat history and feedback support.")
-        
-        system_prompt = (
-            "You are a helpful assistant. Your answer must be based *only* on the provided context documents.\n"
-            "If the context lacks the answer, say you don't know. Do not invent details.\n"
-            "Use 'Chat History' (if any) only to resolve references in the current question, "
-            "but ground your answer in the current context.\n\n"
-            "Current Context Documents:\n---\n{context}\n---\n\n"
-            "{optional_regeneration_prompt_header_if_feedback}\n"
-        )
-        
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", system_prompt),
-            MessagesPlaceholder(variable_name="chat_history", optional=True),
-            ("human", "{regeneration_feedback_if_any}{question}")
-        ])
+        """
+        Create chain for generating answers from context documents.
 
-        chain = prompt | self.llm | StrOutputParser()        
-        return chain
+        This method constructs a LangChain Runnable that generates a final answer based on
+        provided context documents, optional chat history, and optional regeneration feedback.
+        It ensures the answer is grounded in the context and handles follow-up questions via history.
+
+        Returns:
+            Runnable: A configured chain for answer generation.
+        """
+        try:
+            self.logger.info("Creating answer generation chain with chat history and feedback support.")
+            
+            system_prompt = (
+                "You are a helpful assistant. Your answer must be based *only* on the provided context documents.\n"
+                "If the context lacks the answer, say you don't know. Do not invent details.\n"
+                "Use 'Chat History' (if any) only to resolve references in the current question, "
+                "but ground your answer in the current context.\n"
+                "Current Context Documents:\n---\n{context}\n---\n"
+                "{optional_regeneration_prompt_header_if_feedback}"
+            )
+            
+            # Create the prompt template using messages for better history/feedback handling
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", system_prompt),
+                MessagesPlaceholder(variable_name="chat_history", optional=True),
+                ("human", "{regeneration_feedback_if_any}{question}")
+            ])
+            
+            chain = prompt | self.llm | StrOutputParser()
+            
+            self.logger.info("Answer generation chain created successfully.")
+            return chain
+
+        except Exception as e:
+            error_msg = f"Failed to create answer generation chain: {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
 
     def _create_grounding_check_chain(self) -> Runnable:
-        """Create chain for checking if answers are grounded in context."""
-        self.logger.info("Creating answer grounding check chain.")
-        parser = PydanticOutputParser(pydantic_object=GroundingCheck)
-        
-        prompt = ChatPromptTemplate.from_template(
-            template=(
+        """
+        Create chain for checking if answers are grounded in context.
+
+        This method constructs a LangChain Runnable that verifies if a generated answer
+        is fully supported by and only uses information from the provided context documents.
+        It returns a structured `GroundingCheck` object indicating the result.
+
+        Returns:
+            Runnable: A configured chain for answer grounding verification.
+        """
+        try:
+            self.logger.info("Creating answer grounding check chain.")
+            parser = PydanticOutputParser(pydantic_object=GroundingCheck)
+
+            prompt_template = (
                 "You are an Answer Grounding Checker. Your task is to verify if the 'Generated Answer' "
                 "is FULLY supported by and ONLY uses information from the provided 'Context Documents'.\n"
-                "Respond with a JSON matching this schema:\n{format_instructions}\n\n"
-                "Context Documents:\n---\n{context}\n---\n\n"
-                "Generated Answer:\n---\n{generation}\n---\n\n"
+                "Respond with a JSON matching this schema: {format_instructions}\n"
+                "Context Documents:\n---\n{context}\n---\n"
+                "Generated Answer:\n---\n{generation}\n---\n"
                 "Provide your JSON response:"
-            ),
-            partial_variables={"format_instructions": parser.get_format_instructions()}
-        )
-        
-        chain = prompt | self.json_llm | parser
-        return chain
+            )
+            
+            # Create the prompt template, partially filling in the format instructions
+            prompt = ChatPromptTemplate.from_template(template=prompt_template,
+                                                      partial_variables={"format_instructions": parser.get_format_instructions()})
+            
+            chain = prompt | self.json_llm | parser
+            
+            self.logger.info("Answer grounding check chain created successfully.")
+            return chain
 
-	async def _grounding_check_node(self, state: CoreGraphState) -> CoreGraphState
+        except Exception as e:
+            error_msg = f"Failed to create answer grounding check chain: {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+        
+    async def _grounding_check_node(self, state: CoreGraphState) -> CoreGraphState:
         """Perform grounding check on generated answer and provide feedback if needed."""
         self.logger.info("NODE: Performing grounding check on generated answer...")
         
@@ -1450,8 +2062,7 @@ class CoreRAGEngine:
         self,
         question: str,
         collection_name: Optional[str] = None,
-        top_k: int = 4
-    ) -> Dict[str, Any]:
+        top_k: int = 4) -> Dict[str, Any]:
         name = collection_name or self.default_collection_name
         self._init_or_load_vectorstore(name, recreate=False)
         retriever = self.retrievers.get(name)
@@ -1469,68 +2080,68 @@ class CoreRAGEngine:
             return {"answer": "Error generating answer.", "sources": []}
         sources = [
             {"source": d.metadata.get("source", "unknown"),
-             "preview": d.page_content[:200] + "..."}
+            "preview": d.page_content[:200] + "..."}
             for d in docs
         ]
         return {"answer": ans.strip(), "sources": sources}
 
     async def run_full_rag_workflow(self,
-									question: str,
-									collection_name: Optional[str] = None,
-									chat_history: Optional[List[BaseMessage]] = None) -> Dict[str, Any]:
+                                    question: str,
+                                    collection_name: Optional[str] = None,
+                                    chat_history: Optional[List[BaseMessage]] = None) -> Dict[str, Any]:
+        
+        name = collection_name or self.default_collection_name
+        initial_state: CoreGraphState = {
+            "question": question,
+            "original_question": question,
+            "query_analysis_results": None,
+            "documents": [],
+            "context": "",
+            "web_search_results": None,
+            "generation": "",
+            "retries": 0,
+            "run_web_search": "No",
+            "relevance_check_passed": None,
+            "error_message": None,
+            "grounding_check_attempts": 0,
+            "regeneration_feedback": None,
+            "collection_name": name,
+            "chat_history": chat_history or []
+        }
+        final = await self.rag_workflow.ainvoke(initial_state)
+
+        answer = final.get("generation", "")
+        docs = final.get("documents", [])
+        sources = [{"source": d.metadata.get("source", "unknown"), "preview": d.page_content[:200] + "..."} for d in docs]
+        return {"answer": answer, "sources": sources}
 										
-	    name = collection_name or self.default_collection_name
-	    initial_state: CoreGraphState = {
-	        "question": question,
-	        "original_question": question,
-	        "query_analysis_results": None,
-	        "documents": [],
-	        "context": "",
-	        "web_search_results": None,
-	        "generation": "",
-	        "retries": 0,
-	        "run_web_search": "No",
-	        "relevance_check_passed": None,
-	        "error_message": None,
-	        "grounding_check_attempts": 0,
-	        "regeneration_feedback": None,
-	        "collection_name": name,
-	        "chat_history": chat_history or []
-	    }
-	    final = await self.rag_workflow.ainvoke(initial_state)
-	
-	    answer = final.get("generation", "")
-	    docs   = final.get("documents", [])
-	    sources = [{"source": d.metadata.get("source", "unknown"), "preview": d.page_content[:200] + "..."} for d in docs]
-	    return {"answer": answer, "sources": sources}
-										
-	def run_full_rag_workflow_sync(self,
-								   question: str,
-								   collection_name: Optional[str] = None,
-								   chat_history: Optional[List[BaseMessage]] = None) -> Dict[str, Any]:
-	    """Synchronous wrapper for the async workflow"""
-	    import asyncio
-	    import nest_asyncio
-									   
-	    # Try to get existing event loop, create new one if needed
-	    try:
-	        loop = asyncio.get_event_loop()
-	        if loop.is_running():
-	            nest_asyncio.apply()
-	            return loop.run_until_complete(self.run_full_rag_workflow(question, collection_name, chat_history))
-	        else:
-	            return loop.run_until_complete(self.run_full_rag_workflow(question, collection_name, chat_history))
-	    
-		except RuntimeError:
-	        # No event loop exists, create a new one
-	        return asyncio.run(self.run_full_rag_workflow(question, collection_name, chat_history))
-	    except ImportError:
-	        # nest_asyncio not available, create new event loop
-	        new_loop = asyncio.new_event_loop()
-	        asyncio.set_event_loop(new_loop)
-	        try:
-	            return new_loop.run_until_complete(
-	                self.run_full_rag_workflow(question, collection_name, chat_history)
-	            )
-	        finally:
-	            new_loop.close()
+    def run_full_rag_workflow_sync(self,
+                                question: str,
+                                collection_name: Optional[str] = None,
+                                chat_history: Optional[List[BaseMessage]] = None) -> Dict[str, Any]:
+        """Synchronous wrapper for the async workflow"""
+        import asyncio
+        import nest_asyncio
+        
+        # Try to get existing event loop, create new one if needed
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                nest_asyncio.apply()
+                return loop.run_until_complete(self.run_full_rag_workflow(question, collection_name, chat_history))
+            else:
+                return loop.run_until_complete(self.run_full_rag_workflow(question, collection_name, chat_history))
+        
+        except RuntimeError:
+            # No event loop exists, create a new one
+            return asyncio.run(self.run_full_rag_workflow(question, collection_name, chat_history))
+        except ImportError:
+            # nest_asyncio not available, create new event loop
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                return new_loop.run_until_complete(
+                    self.run_full_rag_workflow(question, collection_name, chat_history)
+                )
+            finally:
+                new_loop.close()
