@@ -989,6 +989,7 @@ class CoreRAGEngine:
             self.logger.error(error_msg, exc_info=True)
             return "models/embedding-001"
 
+
     def _create_adaptive_splitter(self) -> AdaptiveChunker:
         """
         Create adaptive chunker with configuration.
@@ -1010,6 +1011,7 @@ class CoreRAGEngine:
             error_msg = f"Failed to create AdaptiveChunker: {e}"
             self.logger.critical(error_msg, exc_info=True)
             raise RuntimeError(error_msg) from e
+
 
     def _create_semantic_splitter(self) -> BaseChunker:
         """
@@ -1044,6 +1046,7 @@ class CoreRAGEngine:
             # Fallback to AdaptiveChunker
             return self._create_adaptive_splitter()
 
+
     def _create_hybrid_splitter(self) -> HybridChunker:
         """
         Create hybrid chunker with primary and secondary splitters.
@@ -1073,6 +1076,7 @@ class CoreRAGEngine:
             error_msg = f"Failed to create HybridChunker: {e}"
             self.logger.critical(error_msg, exc_info=True)
             raise RuntimeError(error_msg) from e
+
 
     def _create_default_splitter(self) -> RecursiveCharacterTextSplitter:
         """
@@ -1113,6 +1117,7 @@ class CoreRAGEngine:
             self.logger.critical(error_msg, exc_info=True)
             raise RuntimeError(error_msg) from e
 
+
     def _init_search_tool(self) -> Optional[Runnable]:
         """
         Initialize Tavily search tool if available.
@@ -1137,79 +1142,6 @@ class CoreRAGEngine:
             self.logger.error(error_msg, exc_info=True)
             return None
 
-    def _create_document_relevance_grader_chain(self) -> Runnable:
-        """
-        Create chain for grading document relevance to questions.
-
-        This method constructs a LangChain Runnable that takes a question and a document excerpt,
-        and uses a JSON-formatted LLM to assess the document's relevance to the question,
-        returning a structured `RelevanceGrade` object.
-
-        Returns:
-            Runnable: A configured chain for document relevance grading.
-        """
-        try:
-            parser = PydanticOutputParser(pydantic_object=RelevanceGrade)
-            prompt_template = (
-                "You are a document relevance grader. Your task is to assess if a given document excerpt "
-                "is relevant to the provided question.\n"
-                "Respond with a JSON object matching this schema:\n"
-                "{format_instructions}\n"
-                "Question: {question}\n"
-                "Document Excerpt:\n---\n{document_content}\n---\n"
-                "Provide your JSON response:"
-            )
-            
-            # Create the prompt template, partially filling in the format instructions
-            prompt = ChatPromptTemplate.from_template(template=prompt_template,
-                                                      partial_variables={"format_instructions": parser.get_format_instructions()})
-            
-            chain = prompt | self.json_llm | PydanticOutputParser(pydantic_object=RelevanceGrade)
-
-            self.logger.info("Document relevance grader chain created successfully with PydanticOutputParser.")
-            return chain
-
-        except Exception as e:
-            error_msg = f"Failed to create document relevance grader chain: {e}"
-            self.logger.critical(error_msg, exc_info=True)
-            raise RuntimeError(error_msg) from e
-
-    def _create_document_relevance_grader_chain(self) -> Runnable:
-        """
-        Create chain for grading document relevance to questions.
-
-        This method constructs a LangChain Runnable that takes a question and a document excerpt,
-        and uses a JSON-formatted LLM to assess the document's relevance to the question,
-        returning a structured `RelevanceGrade` object.
-
-        Returns:
-            Runnable: A configured chain for document relevance grading.
-        """
-        try:
-            parser = PydanticOutputParser(pydantic_object=RelevanceGrade)
-            prompt_template = (
-                "You are a document relevance grader. Your task is to assess if a given document excerpt "
-                "is relevant to the provided question.\n"
-                "Respond with a JSON object matching this schema:\n"
-                "{format_instructions}\n"
-                "Question: {question}\n"
-                "Document Excerpt:\n---\n{document_content}\n---\n"
-                "Provide your JSON response:"
-            )
-            
-            # Create the prompt template, partially filling in the format instructions
-            prompt = ChatPromptTemplate.from_template(template=prompt_template,
-                                                      partial_variables={"format_instructions": parser.get_format_instructions()})
-            
-            chain = prompt | self.json_llm | PydanticOutputParser(pydantic_object=RelevanceGrade)
-            
-            self.logger.info("Document relevance grader chain created successfully with PydanticOutputParser.")
-            return chain
-
-        except Exception as e:
-            error_msg = f"Failed to create document relevance grader chain: {e}"
-            self.logger.critical(error_msg, exc_info=True)
-            raise RuntimeError(error_msg) from e
 
     def _create_document_relevance_grader_chain(self) -> Runnable:
         """
@@ -1247,6 +1179,83 @@ class CoreRAGEngine:
             error_msg = f"Failed to create document relevance grader chain: {e}"
             self.logger.critical(error_msg, exc_info=True)
             raise RuntimeError(error_msg) from e
+
+
+    def _create_document_relevance_grader_chain(self) -> Runnable:
+        """
+        Create chain for grading document relevance to questions.
+
+        This method constructs a LangChain Runnable that takes a question and a document excerpt,
+        and uses a JSON-formatted LLM to assess the document's relevance to the question,
+        returning a structured `RelevanceGrade` object.
+
+        Returns:
+            Runnable: A configured chain for document relevance grading.
+        """
+        try:
+            parser = PydanticOutputParser(pydantic_object=RelevanceGrade)
+            prompt_template = (
+                "You are a document relevance grader. Your task is to assess if a given document excerpt "
+                "is relevant to the provided question.\n"
+                "Respond with a JSON object matching this schema:\n"
+                "{format_instructions}\n"
+                "Question: {question}\n"
+                "Document Excerpt:\n---\n{document_content}\n---\n"
+                "Provide your JSON response:"
+            )
+            
+            # Create the prompt template, partially filling in the format instructions
+            prompt = ChatPromptTemplate.from_template(template=prompt_template,
+                                                      partial_variables={"format_instructions": parser.get_format_instructions()})
+            
+            chain = prompt | self.json_llm | PydanticOutputParser(pydantic_object=RelevanceGrade)
+            
+            self.logger.info("Document relevance grader chain created successfully with PydanticOutputParser.")
+            return chain
+
+        except Exception as e:
+            error_msg = f"Failed to create document relevance grader chain: {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
+
+    def _create_document_relevance_grader_chain(self) -> Runnable:
+        """
+        Create chain for grading document relevance to questions.
+
+        This method constructs a LangChain Runnable that takes a question and a document excerpt,
+        and uses a JSON-formatted LLM to assess the document's relevance to the question,
+        returning a structured `RelevanceGrade` object.
+
+        Returns:
+            Runnable: A configured chain for document relevance grading.
+        """
+        try:
+            parser = PydanticOutputParser(pydantic_object=RelevanceGrade)
+            prompt_template = (
+                "You are a document relevance grader. Your task is to assess if a given document excerpt "
+                "is relevant to the provided question.\n"
+                "Respond with a JSON object matching this schema:\n"
+                "{format_instructions}\n"
+                "Question: {question}\n"
+                "Document Excerpt:\n---\n{document_content}\n---\n"
+                "Provide your JSON response:"
+            )
+            
+            # Create the prompt template, partially filling in the format instructions
+            prompt = ChatPromptTemplate.from_template(template=prompt_template,
+                                                      partial_variables={"format_instructions": parser.get_format_instructions()})
+            
+            chain = prompt | self.json_llm | PydanticOutputParser(pydantic_object=RelevanceGrade)
+
+            self.logger.info("Document relevance grader chain created successfully with PydanticOutputParser.")
+            return chain
+
+        except Exception as e:
+            error_msg = f"Failed to create document relevance grader chain: {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+
 
     def _create_query_rewriter_chain(self) -> Runnable:
         """
@@ -1283,6 +1292,7 @@ class CoreRAGEngine:
             error_msg = f"Failed to create query rewriter chain: {e}"
             self.logger.critical(error_msg, exc_info=True)
             raise RuntimeError(error_msg) from e
+
 
     def _create_answer_generation_chain(self) -> Runnable:
         """
@@ -1362,35 +1372,77 @@ class CoreRAGEngine:
             self.logger.critical(error_msg, exc_info=True)
             raise RuntimeError(error_msg) from e
         
+
     async def _grounding_check_node(self, state: CoreGraphState) -> CoreGraphState:
-        """Perform grounding check on generated answer and provide feedback if needed."""
-        self.logger.info("NODE: Performing grounding check on generated answer...")
-        
-        # Extract state variables
-        context = state.get("context", "")
-        generation = state.get("generation", "")
-        question = state.get("original_question") or state.get("question", "")
-        documents = state.get("documents", [])
-        
-        # Update attempt tracking
-        current_attempts = state.get("grounding_check_attempts", 0) + 1
-        state["grounding_check_attempts"] = current_attempts
-        state["regeneration_feedback"] = None
+        """
+        Perform grounding check on generated answer and provide feedback if needed.
 
-        # Skip check if no context/generation or generation error
-        if not context or not generation or "Error generating answer." in generation:
-            self.logger.info("Skipping grounding check (no context or generation, or generation error).")
-            return {**state, "regeneration_feedback": None, "grounding_check_attempts": current_attempts}
+        This asynchronous node in the RAG workflow evaluates whether the generated
+        answer is fully supported by the retrieved context. It can use either a
+        basic check (via a dedicated chain) or an advanced multi-level check,
+        depending on configuration. If the answer is not grounded, feedback is
+        generated to guide regeneration.
 
+        Args:
+            state (CoreGraphState): The current state of the RAG workflow.
+
+        Returns:
+            CoreGraphState: The updated state, potentially including regeneration feedback.
+        """
         try:
-            if self.enable_advanced_grounding and self.advanced_grounding_checker:
-                await self._perform_advanced_grounding_check(state, context, generation, question, documents, current_attempts)
-            else:
-                self._perform_basic_grounding_check(state, context, generation, question, current_attempts)
-        except Exception as e:
-            self._handle_grounding_check_exception(state, e, question, current_attempts)
+            self.logger.info("NODE: Performing grounding check on generated answer...")
 
-        return state
+            # Extract State Variables
+            context = state.get("context", "")
+            generation = state.get("generation", "")
+            question = state.get("original_question") or state.get("question", "")
+            documents = state.get("documents", [])
+
+            # Update Attempt Tracking
+            current_attempts = state.get("grounding_check_attempts", 0) + 1
+            state["grounding_check_attempts"] = current_attempts
+            # Reset feedback for this attempt
+            state["regeneration_feedback"] = None
+
+            # Skip the grounding check if essential data is missing or a generation error occurred
+            if not context or not generation or "Error generating answer." in generation:
+                self.logger.info("Skipping grounding check (no context or generation, or generation error).")
+                # Explicitly set feedback to None and update attempts in the returned state
+                return {**state,
+                        "regeneration_feedback": None,
+                        "grounding_check_attempts": current_attempts}
+
+            # Perform Grounding Check
+            try:
+                if self.enable_advanced_grounding and self.advanced_grounding_checker:
+                    # Use the advanced, multi-level grounding checker
+                    await self._perform_advanced_grounding_check(state,
+                                                                 context,
+                                                                 generation,
+                                                                 question,
+                                                                 documents,
+                                                                 current_attempts)
+                else:
+                    # Use the basic grounding check chain
+                    self._perform_basic_grounding_check(state,
+                                                        context,
+                                                        generation,
+                                                        question,
+                                                        current_attempts)
+            except Exception as check_execution_error:
+                self._handle_grounding_check_exception(state, check_execution_error, question, current_attempts)
+
+            return state
+
+        except Exception as node_error:
+            error_msg = f"Unexpected error in _grounding_check_node: {node_error}"
+            self.logger.critical(error_msg, exc_info=True)
+            
+            state["regeneration_feedback"] = f"A critical system error occurred in the grounding check node: {node_error}. Please try to generate a concise answer based on context."
+            state["error_message"] = (state.get("error_message") or "") + f" | Critical grounding node error: {node_error}"
+
+            raise RuntimeError(error_msg) from node_error
+
 
     async def _perform_advanced_grounding_check(self,
                                                 state: CoreGraphState,
@@ -1399,244 +1451,711 @@ class CoreRAGEngine:
                                                 question: str,
                                                 documents: List,
                                                 attempt: int) -> None:
-        """Perform advanced multi-level grounding check."""
+        """
+        Perform advanced multi-level grounding check.
+
+        This method uses the `MultiLevelGroundingChecker` to conduct a comprehensive
+        analysis of the generated answer against the context and documents. It evaluates
+        grounding, consistency, completeness, and potential hallucinations. Based on
+        the results, it either confirms the answer is acceptable or generates detailed
+        feedback for regeneration.
+
+        Args:
+            state (CoreGraphState): The current workflow state to be updated.
+            context (str): The aggregated context used for generation.
+            generation (str): The generated answer to check.
+            question (str): The original user question.
+            documents (List): The list of retrieved documents.
+            attempt (int): The current grounding check attempt number.
+        """
         try:
-            # Run advanced grounding check
-            advanced_results = await self.advanced_grounding_checker.perform_comprehensive_grounding_check(
-                answer=generation,
-                context=context,
-                question=question,
-                documents=documents
-            )
-            
-            # Process advanced results
-            overall_assessment = advanced_results.get("overall_assessment", {})
-            is_acceptable = overall_assessment.get("is_acceptable", False)
-            
-            if not is_acceptable:
-                self._generate_advanced_feedback(state, advanced_results, question, attempt)
-            else:
-                self.logger.info(f"Advanced grounding check PASSED (Attempt {attempt}). Score: {overall_assessment.get('overall_score', 'N/A')}")
-                state["regeneration_feedback"] = None
-            
-            # Store detailed results for potential debugging
-            state["advanced_grounding_results"] = advanced_results
-            
+            self.logger.info(f"Initiating advanced grounding check (Attempt {attempt})...")
+
+            try:
+                advanced_results = await self.advanced_grounding_checker.perform_comprehensive_grounding_check(
+                    answer=generation,
+                    context=context,
+                    question=question,
+                    documents=documents
+                )
+                self.logger.debug(f"Advanced grounding check completed (Attempt {attempt}).")
+            except Exception as checker_error:
+                error_msg = f"Advanced grounding checker execution failed (Attempt {attempt}): {checker_error}"
+                self.logger.error(error_msg, exc_info=True)
+                raise RuntimeError(error_msg) from checker_error
+
+            try:
+                # Extract the overall assessment
+                overall_assessment = advanced_results.get("overall_assessment", {})
+                is_acceptable = overall_assessment.get("is_acceptable", False)
+
+                if not is_acceptable:
+                    # The answer did not pass the advanced check, generate detailed feedback
+                    self._generate_advanced_feedback(state, advanced_results, question, attempt)
+                else:
+                    # The answer passed the advanced check
+                    score_info = overall_assessment.get('overall_score', 'N/A')
+                    self.logger.info(f"Advanced grounding check PASSED (Attempt {attempt}). Score: {score_info}")
+                    # Ensure no feedback is carried forward from a previous failed attempt
+                    state["regeneration_feedback"] = None
+
+                # Store detailed results for potential debugging or future use
+                state["advanced_grounding_results"] = advanced_results
+
+            except Exception as processing_error:
+                error_msg = f"Error processing advanced grounding results (Attempt {attempt}): {processing_error}"
+                self.logger.error(error_msg, exc_info=True)
+
+            self.logger.info(f"Finished advanced grounding check processing (Attempt {attempt}).")
+
         except Exception as e:
-            self.logger.error(f"Advanced grounding check failed with exception: {e}. Falling back to basic check.")
+            self.logger.error(f"Advanced grounding check failed with exception (Attempt {attempt}): {e}. Falling back to basic check.", exc_info=True)
             self._perform_basic_grounding_check(state, context, generation, question, attempt)
 
-    def _perform_basic_grounding_check(self,
-                                       state: CoreGraphState,
-                                       context: str,
-                                       generation: str,
-                                       question: str,
-                                       attempt: int) -> None:
-        """Perform basic grounding check using the grounding check chain."""
-        result: GroundingCheck = self.grounding_check_chain.invoke({"context": context, "generation": generation})
 
-        if not result.is_grounded:
-            self._generate_basic_feedback(state, result, question, attempt)
-        else:
-            self.logger.info(f"Basic grounding check PASSED (Attempt {attempt}).")
-            state["regeneration_feedback"] = None
+    def _perform_basic_grounding_check(
+        self,
+        state: CoreGraphState,
+        context: str,
+        generation: str,
+        question: str,
+        attempt: int
+    ) -> None:
+        """
+        Perform basic grounding check using the grounding check chain.
 
-    def _generate_advanced_feedback(self, state: CoreGraphState, advanced_results: Dict, question: str, attempt: int) -> None:
-        """Generate detailed feedback based on advanced grounding analysis."""
-        feedback_parts = []
-        
-        detailed_grounding = advanced_results.get("detailed_grounding")
-        if detailed_grounding and hasattr(detailed_grounding, 'unsupported_claims') and detailed_grounding.unsupported_claims:
-            feedback_parts.append(f"Unsupported claims found: {'; '.join(detailed_grounding.unsupported_claims[:3])}")
-        
-        consistency = advanced_results.get("consistency")
-        if consistency and hasattr(consistency, 'contradictions_found') and consistency.contradictions_found:
-            feedback_parts.append(f"Internal contradictions: {'; '.join(consistency.contradictions_found[:2])}")
-        
-        completeness = advanced_results.get("completeness")
-        if completeness and hasattr(completeness, 'missing_aspects') and completeness.missing_aspects:
-            feedback_parts.append(f"Missing important aspects: {'; '.join(completeness.missing_aspects[:2])}")
-        
-        hallucinations = advanced_results.get("hallucination_detection", {}).get("hallucinations", [])
-        if hallucinations:
-            feedback_parts.append(f"Potential hallucinations: {'; '.join(hallucinations[:2])}")
-        
-        if feedback_parts:
-            overall_assessment = advanced_results.get("overall_assessment", {})
-            recommendation = overall_assessment.get("recommendation", "Please improve the answer")
-            regeneration_prompt = (
-                f"The previous answer to '{question}' failed advanced verification. "
-                f"Issues identified: {' | '.join(feedback_parts)}. "
-                f"Recommendation: {recommendation}. "
-                f"Please generate a new answer that strictly follows the provided context and addresses these issues."
-            )
-            state["regeneration_feedback"] = regeneration_prompt
-            self.logger.warning(f"Advanced grounding check FAILED (Attempt {attempt}). Issues: {len(feedback_parts)}")
-        else:
-            # No specific issues identified, use general feedback
-            state["regeneration_feedback"] = (
-                f"The answer to '{question}' did not meet quality standards. "
-                f"Please generate a more accurate answer based strictly on the provided context."
-            )
+        This method uses the pre-configured `grounding_check_chain` (a LangChain Runnable)
+        to evaluate if the generated answer is grounded in the provided context. It parses
+        the structured output and, if the answer is not grounded, generates feedback
+        for regeneration.
 
-    def _generate_basic_feedback(self, state: CoreGraphState, result: GroundingCheck, question: str, attempt: int) -> None:
-        """Generate feedback based on basic grounding check results."""
-        feedback_parts = []
-        if result.ungrounded_statements:
-            feedback_parts.append(f"The following statements were ungrounded: {'; '.join(result.ungrounded_statements)}.")
-        if result.correction_suggestion:
-            feedback_parts.append(f"Suggestion for correction: {result.correction_suggestion}.")
-
-        if not feedback_parts:
-            feedback_parts.append("The answer was not fully grounded in the provided context. Please revise.")
-
-        regeneration_prompt = (
-            f"The previous answer to the question '{question}' was not well-grounded. "
-            f"{' '.join(feedback_parts)} "
-            "Please generate a new answer focusing ONLY on the provided documents and addressing these issues."
-        )
-        state["regeneration_feedback"] = regeneration_prompt
-        self.logger.warning(f"Basic grounding check FAILED (Attempt {attempt}). Feedback: {regeneration_prompt}")
-
-    def _handle_grounding_check_exception(self, state: CoreGraphState, exception: Exception, question: str, attempt: int) -> None:
-        """Handle exceptions during grounding check execution."""
-        self.logger.error(f"Grounding check failed with exception: {exception}", exc_info=True)
-        state["regeneration_feedback"] = f"A system error occurred during grounding check: {exception}. Please try to generate a concise answer based on context."
-        state["error_message"] = (state.get("error_message") or "") + f" | Grounding check exception: {exception}"
-        
-    def _route_after_grounding_check(self, state: CoreGraphState) -> str:
-        self.logger.info(
-            f"Routing after grounding check. Attempts: {state.get('grounding_check_attempts', 0)}. "
-            f"Feedback: {'Yes' if state.get('regeneration_feedback') else 'No'}"
-        )
-
-        max_attempts = getattr(self, 'max_grounding_attempts', 1)
-
-        if state.get("regeneration_feedback") is None:
-            self.logger.info("Answer is grounded. Ending.")
-            return END
-
-        if state.get("grounding_check_attempts", 0) >= max_attempts:
-            self.logger.warning(f"Max grounding attempts ({max_attempts}) reached. Answer still not grounded. Ending with warning.")
-            original_generation = state.get("generation", "")
-            warning_message = (
-                "**Self-Correction Incomplete:** The following answer could not be fully verified against the provided documents after attempts to correct it. "
-                "Please use with caution.\n---\n"
-            )
-            state["generation"] = warning_message + original_generation
-            return END
-
-        self.logger.info("Answer not grounded, and attempts remain. Routing back to generate_answer.")
-        return "generate_answer"
-
-    # ---------------------
-    # Wrapper Node Methods
-    # ---------------------
-    def _retrieve_node(self, state: CoreGraphState) -> CoreGraphState:
-        collection_name = state.get("collection_name") or self.default_collection_name
-        self.logger.info(f"NODE: Retrieving documents from collection '{collection_name}' for question: '{state['question']}'")
-
-        # Ensure vectorstore and retriever exist
-        self._init_or_load_vectorstore(collection_name, recreate=False)
-        retriever = self.retrievers.get(collection_name)
-
-        if not retriever:
-            self.logger.warning(f"No retriever found for collection '{collection_name}'. Returning empty documents.")
-            state["documents"] = []
-            state["context"] = "Retriever not available for the specified collection."
-            return state
-
-        current_question = state["question"]
-        query_analysis: Optional[QueryAnalysis] = state.get("query_analysis_results")
-
-        # 1. Determine dynamic top_k
-        retrieval_k = self.default_retrieval_top_k
-        if query_analysis:
-            self.logger.info(f"Using query analysis for retrieval: Type='{query_analysis.query_type}', Keywords='{query_analysis.extracted_keywords}'")
-            if query_analysis.query_type in ["summary_request", "complex_reasoning"]:
-                # For summaries / complex reasoning, retrieve more docs
-                retrieval_k = max(self.default_retrieval_top_k, 7)
-                self.logger.info(f"Adjusted top_k to {retrieval_k} for query type: {query_analysis.query_type}")
-            elif query_analysis.query_type == "factual_lookup":
-                # For factual lookups, retrieve fewer docs
-                retrieval_k = min(self.default_retrieval_top_k, 3)
-                self.logger.info(f"Adjusted top_k to {retrieval_k} for query type: {query_analysis.query_type}")
-
-        # 2. Augment query with keywords (if any)
-        search_query = current_question
-        if query_analysis and query_analysis.extracted_keywords:
-            keywords_str = " ".join(query_analysis.extracted_keywords)
-            search_query = f"{current_question} Keywords: {keywords_str}"
-            self.logger.info(f"Augmented search query with keywords: '{search_query}'")
-
-        # 3. Temporarily override retriever.k or retriever.search_kwargs['k'] if possible
-        original_k = None
+        Args:
+            state (CoreGraphState): The current workflow state to be updated.
+            context (str): The aggregated context used for generation.
+            generation (str): The generated answer to check.
+            question (str): The original user question.
+            attempt (int): The current grounding check attempt number.
+        """
         try:
-            if hasattr(retriever, "k"):
-                original_k = retriever.k
-                retriever.k = retrieval_k
-            elif hasattr(retriever, "search_kwargs") and "k" in retriever.search_kwargs:
-                original_k = retriever.search_kwargs["k"]
-                retriever.search_kwargs["k"] = retrieval_k
+            self.logger.info(f"Initiating basic grounding check (Attempt {attempt})...")
 
-            self.logger.info(f"Attempting to retrieve top {retrieval_k} docs for: '{search_query}'")
-            docs = retriever.invoke(search_query)
-            self.logger.info(f"Retrieved {len(docs)} documents.")
+            try:
+                # The chain expects 'context' and 'generation' as inputs
+                chain_input = {"context": context, "generation": generation}
+                result: GroundingCheck = self.grounding_check_chain.invoke(chain_input)
+                self.logger.debug(f"Basic grounding check chain invoked successfully (Attempt {attempt}).")
+            except Exception as chain_invoke_error:
+                error_msg = f"Error invoking basic grounding check chain (Attempt {attempt}): {chain_invoke_error}"
+                self.logger.error(error_msg, exc_info=True)
+                raise RuntimeError(error_msg) from chain_invoke_error
+
+            try:
+                if not result.is_grounded:
+                    # The answer failed the basic grounding check, generate feedback
+                    self._generate_basic_feedback(state, result, question, attempt)
+                else:
+                    # The answer passed the basic grounding check
+                    self.logger.info(f"Basic grounding check PASSED (Attempt {attempt}).")
+                    # Ensure no feedback is carried forward from a previous failed attempt
+                    state["regeneration_feedback"] = None
+            except Exception as feedback_error:
+                error_msg = f"Error processing basic grounding results or generating feedback (Attempt {attempt}): {feedback_error}"
+                self.logger.error(error_msg, exc_info=True)
+
+            self.logger.info(f"Finished basic grounding check processing (Attempt {attempt}).")
+
         except Exception as e:
-            self.logger.error(f"Error during document retrieval: {e}", exc_info=True)
-            state["documents"] = []
-            state["context"] = "Error occurred during document retrieval."
-            state["error_message"] = (state.get("error_message") or "") + f" | Retrieval error: {e}"
-            # Restore original k if set
-            if original_k is not None:
+            error_msg = f"Unexpected error in _perform_basic_grounding_check (Attempt {attempt}): {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            state["regeneration_feedback"] = f"A system error occurred during the basic grounding check: {e}. Please try to generate a concise answer based on context."
+            state["error_message"] = (state.get("error_message") or "") + f" | Basic grounding check error (Attempt {attempt}): {e}"
+            raise RuntimeError(error_msg) from e
+
+
+    async def _perform_advanced_grounding_check(
+        self,
+        state: CoreGraphState,
+        context: str,
+        generation: str,
+        question: str,
+        documents: List,
+        attempt: int
+    ) -> None:
+        """
+        Perform advanced multi-level grounding check.
+
+        This method uses the `MultiLevelGroundingChecker` to conduct a comprehensive
+        analysis of the generated answer against the context and documents. It evaluates
+        grounding, consistency, completeness, and potential hallucinations. Based on
+        the results, it either confirms the answer is acceptable or generates detailed
+        feedback for regeneration.
+
+        Args:
+            state (CoreGraphState): The current workflow state to be updated.
+            context (str): The aggregated context used for generation.
+            generation (str): The generated answer to check.
+            question (str): The original user question.
+            documents (List): The list of retrieved documents.
+            attempt (int): The current grounding check attempt number.
+        """
+        try:
+            self.logger.info(f"Initiating advanced grounding check (Attempt {attempt})...")
+
+            try:
+                advanced_results = await self.advanced_grounding_checker.perform_comprehensive_grounding_check(
+                    answer=generation,
+                    context=context,
+                    question=question,
+                    documents=documents
+                )
+                self.logger.debug(f"Advanced grounding check completed (Attempt {attempt}).")
+            except Exception as checker_error:
+                error_msg = f"Advanced grounding checker execution failed (Attempt {attempt}): {checker_error}"
+                self.logger.error(error_msg, exc_info=True)
+                raise RuntimeError(error_msg) from checker_error
+
+            try:
+                # Extract the overall assessment
+                overall_assessment = advanced_results.get("overall_assessment", {})
+                is_acceptable = overall_assessment.get("is_acceptable", False)
+
+                if not is_acceptable:
+                    # The answer did not pass the advanced check, generate detailed feedback
+                    self._generate_advanced_feedback(state, advanced_results, question, attempt)
+                else:
+                    # The answer passed the advanced check
+                    score_info = overall_assessment.get('overall_score', 'N/A')
+                    self.logger.info(f"Advanced grounding check PASSED (Attempt {attempt}). Score: {score_info}")
+                    # Ensure no feedback is carried forward from a previous failed attempt
+                    state["regeneration_feedback"] = None
+
+                # Store detailed results for potential debugging or future use
+                state["advanced_grounding_results"] = advanced_results
+
+            except Exception as processing_error:
+                error_msg = f"Error processing advanced grounding results (Attempt {attempt}): {processing_error}"
+                self.logger.error(error_msg, exc_info=True)
+                
+            self.logger.info(f"Finished advanced grounding check processing (Attempt {attempt}).")
+
+        except Exception as e:
+            self.logger.error(f"Advanced grounding check failed with exception (Attempt {attempt}): {e}. Falling back to basic check.", exc_info=True)
+            self._perform_basic_grounding_check(state, context, generation, question, attempt)
+
+
+    def _generate_basic_feedback(self,
+                                 state: CoreGraphState,
+                                 result: GroundingCheck,
+                                 question: str,
+                                 attempt: int) -> None:
+        """
+        Generate feedback based on basic grounding check results.
+
+        This method processes the structured output from the basic grounding check chain
+        (`GroundingCheck`) and constructs a regeneration prompt for the answer generation node.
+        It uses the identified ungrounded statements and correction suggestions.
+
+        Args:
+            state (CoreGraphState): The current workflow state to be updated with feedback.
+            result (GroundingCheck): The result from the basic grounding check chain.
+            question (str): The original user question.
+            attempt (int): The current grounding check attempt number.
+        """
+        try:
+            self.logger.debug(f"Generating basic feedback (Attempt {attempt})...")
+
+            feedback_parts: List[str] = []
+
+            try:
+                ungrounded_statements = result.ungrounded_statements
+                if ungrounded_statements:
+                    # Join the list of ungrounded statements into a single string for the prompt
+                    statements_str = '; '.join(ungrounded_statements)
+                    feedback_parts.append(f"The following statements were ungrounded: {statements_str}.")
+            except Exception as statements_error:
+                self.logger.warning(f"Error processing ungrounded statements (Attempt {attempt}): {statements_error}")
+
+            try:
+                correction_suggestion = result.correction_suggestion
+                if correction_suggestion:
+                    feedback_parts.append(f"Suggestion for correction: {correction_suggestion}.")
+            except Exception as suggestion_error:
+                self.logger.warning(f"Error processing correction suggestion (Attempt {attempt}): {suggestion_error}")
+
+            # Handle Case with No Specific Feedback
+            if not feedback_parts:
+                feedback_parts.append("The answer was not fully grounded in the provided context. Please revise.")
+
+            try:
+                # Construct the regeneration prompt using the collected feedback parts
+                regeneration_prompt = (
+                    f"The previous answer to the question '{question}' was not well-grounded. "
+                    f"{' '.join(feedback_parts)} "
+                    "Please generate a new answer focusing ONLY on the provided documents and addressing these issues."
+                )
+                
+                # Update the state with the generated feedback
+                state["regeneration_feedback"] = regeneration_prompt
+                self.logger.warning(f"Basic grounding check FAILED (Attempt {attempt}). Feedback generated.")
+
+            except Exception as prompt_error:
+                error_msg = f"Error constructing basic feedback prompt (Attempt {attempt}): {prompt_error}"
+                self.logger.error(error_msg, exc_info=True)
+                state["regeneration_feedback"] = (
+                    f"The answer to '{question}' failed a basic grounding check. "
+                    f"Please generate a new answer based strictly on the provided context."
+                )
+
+            self.logger.debug(f"Finished generating basic feedback (Attempt {attempt}).")
+
+        except Exception as e:
+            error_msg = f"Unexpected error in _generate_basic_feedback (Attempt {attempt}): {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            state["regeneration_feedback"] = (
+                f"A system error occurred while generating feedback: {e}. "
+                f"Please try to generate a concise and accurate answer based on the provided context for '{question}'."
+            )
+            raise RuntimeError(error_msg) from e
+
+
+    def _generate_advanced_feedback(self,
+                                    state: CoreGraphState,
+                                    advanced_results: Dict,
+                                    question: str,
+                                    attempt: int) -> None:
+        """
+        Generate detailed feedback based on advanced grounding analysis.
+
+        This method processes the results from the `MultiLevelGroundingChecker` and
+        constructs a detailed regeneration prompt for the answer generation node.
+        It identifies specific issues like unsupported claims, contradictions, missing
+        aspects, and hallucinations.
+
+        Args:
+            state (CoreGraphState): The current workflow state to be updated with feedback.
+            advanced_results (Dict): The detailed results from the advanced grounding checker.
+            question (str): The original user question.
+            attempt (int): The current grounding check attempt number.
+        """
+        try:
+            self.logger.debug(f"Generating advanced feedback (Attempt {attempt})...")
+
+            feedback_parts: List[str] = []
+
+            # Extract and Process Detailed Grounding Issues
+            try:
+                detailed_grounding = advanced_results.get("detailed_grounding")
+                if detailed_grounding:
+                    unsupported_claims = getattr(detailed_grounding, 'unsupported_claims', [])
+                    if unsupported_claims:
+                        # Limit the number of claims shown in feedback for conciseness
+                        limited_claims = unsupported_claims[:3]
+                        feedback_parts.append(f"Unsupported claims found: {'; '.join(limited_claims)}")
+            except Exception as grounding_error:
+                self.logger.warning(f"Error processing detailed grounding results (Attempt {attempt}): {grounding_error}")
+
+            # Extract and Process Consistency Issues
+            try:
+                consistency = advanced_results.get("consistency")
+                if consistency:
+                    contradictions_found = getattr(consistency, 'contradictions_found', [])
+                    if contradictions_found:
+                        # Limit the number of contradictions shown
+                        limited_contradictions = contradictions_found[:2]
+                        feedback_parts.append(f"Internal contradictions: {'; '.join(limited_contradictions)}")
+            except Exception as consistency_error:
+                self.logger.warning(f"Error processing consistency results (Attempt {attempt}): {consistency_error}")
+
+            # Extract and Process Completeness Issues
+            try:
+                completeness = advanced_results.get("completeness")
+                if completeness:
+                    missing_aspects = getattr(completeness, 'missing_aspects', [])
+                    if missing_aspects:
+                        # Limit the number of missing aspects shown
+                        limited_missing = missing_aspects[:2]
+                        feedback_parts.append(f"Missing important aspects: {'; '.join(limited_missing)}")
+            except Exception as completeness_error:
+                self.logger.warning(f"Error processing completeness results (Attempt {attempt}): {completeness_error}")
+
+            # Extract and Process Hallucination Issues
+            try:
+                hallucination_data = advanced_results.get("hallucination_detection", {})
+                hallucinations = hallucination_data.get("hallucinations", [])
+                if hallucinations:
+                    # Limit the number of hallucinations shown
+                    limited_hallucinations = hallucinations[:2]
+                    feedback_parts.append(f"Potential hallucinations: {'; '.join(limited_hallucinations)}")
+            except Exception as hallucination_error:
+                self.logger.warning(f"Error processing hallucination results (Attempt {attempt}): {hallucination_error}")
+
+            if feedback_parts:
+                try:
+                    # Get a high-level recommendation from the overall assessment
+                    overall_assessment = advanced_results.get("overall_assessment", {})
+                    recommendation = overall_assessment.get("recommendation", "Please improve the answer")
+                    
+                    regeneration_prompt = (
+                        f"The previous answer to '{question}' failed advanced verification. "
+                        f"Issues identified: {' | '.join(feedback_parts)}. "
+                        f"Recommendation: {recommendation}. "
+                        f"Please generate a new answer that strictly follows the provided context and addresses these issues."
+                    )
+                    
+                    # Update the state with the generated feedback
+                    state["regeneration_feedback"] = regeneration_prompt
+                    self.logger.warning(f"Advanced grounding check FAILED (Attempt {attempt}). Issues identified: {len(feedback_parts)}")
+                    
+                except Exception as prompt_error:
+                    error_msg = f"Error constructing advanced feedback prompt (Attempt {attempt}): {prompt_error}"
+                    self.logger.error(error_msg, exc_info=True)
+                    state["regeneration_feedback"] = (
+                        f"The answer to '{question}' did not meet advanced quality standards. "
+                        f"Please generate a more accurate and complete answer based strictly on the provided context."
+                    )
+            else:
+                self.logger.info(f"No specific advanced issues found, but check failed (Attempt {attempt}). Using general feedback.")
+                state["regeneration_feedback"] = (
+                    f"The answer to '{question}' did not meet quality standards. "
+                    f"Please generate a more accurate answer based strictly on the provided context."
+                )
+
+            self.logger.debug(f"Finished generating advanced feedback (Attempt {attempt}).")
+
+        except Exception as e:
+            error_msg = f"Unexpected error in _generate_advanced_feedback (Attempt {attempt}): {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            state["regeneration_feedback"] = (
+                f"A system error occurred while generating detailed feedback: {e}. "
+                f"Please try to generate a concise and accurate answer based on the provided context for '{question}'."
+            )
+            raise RuntimeError(error_msg) from e
+    
+
+    def _handle_grounding_check_exception(self,
+                                          state: CoreGraphState,
+                                          exception: Exception,
+                                          question: str,
+                                          attempt: int) -> None:
+        """
+        Handle exceptions during grounding check execution.
+
+        This method is a centralized exception handler for errors that occur
+        during either the basic or advanced grounding check processes. It logs
+        the error and generates generic fallback feedback to guide the workflow.
+
+        Args:
+            state (CoreGraphState): The current workflow state to be updated.
+            exception (Exception): The exception that was caught.
+            question (str): The original user question.
+            attempt (int): The current grounding check attempt number.
+        """
+        try:
+            self.logger.error(f"Grounding check failed with exception (Attempt {attempt}): {exception}", exc_info=True)
+
+            # Generate Generic Error Feedback
+            try:
+                error_feedback = (
+                    f"A system error occurred during the grounding check process: {exception}. "
+                    f"Please try to generate a concise and accurate answer based on the provided context for '{question}'."
+                )
+                
+                # Update the state with the error feedback
+                state["regeneration_feedback"] = error_feedback
+                
+            except Exception as feedback_error:
+                self.logger.critical(f"Failed to generate error feedback (Attempt {attempt}): {feedback_error}", exc_info=True)
+                state["regeneration_feedback"] = f"An error occurred during verification. Please answer '{question}' concisely based on context."
+
+            # Update Error Message in State
+            try:
+                # Append the grounding check exception to the overall error message in the state
+                current_error_msg = state.get("error_message", "")
+                if current_error_msg:
+                    updated_error_msg = f"{current_error_msg} | Grounding check exception (Attempt {attempt}): {exception}"
+                else:
+                    updated_error_msg = f"Grounding check exception (Attempt {attempt}): {exception}"
+                
+                state["error_message"] = updated_error_msg
+                
+            except Exception as state_error:
+                self.logger.warning(f"Failed to update state error_message (Attempt {attempt}): {state_error}")
+
+            self.logger.info(f"Handled grounding check exception (Attempt {attempt}). Workflow will proceed with error feedback.")
+
+        except Exception as handler_error:
+            critical_error_msg = f"Critical failure in _handle_grounding_check_exception (Attempt {attempt}): {handler_error}"
+            self.logger.critical(critical_error_msg, exc_info=True)
+            
+            try:
+                state["regeneration_feedback"] = f"Critical system error during verification for '{question}'. Provide a concise answer."
+                state["error_message"] = (state.get("error_message", "")) + f" | Critical handler error: {handler_error}"
+            except:
+                pass
+                
+            raise RuntimeError(critical_error_msg) from handler_error
+
+
+    def _route_after_grounding_check(self, state: CoreGraphState) -> str:
+        """
+        Determine the next step in the workflow after a grounding check.
+
+        This method evaluates the results of the grounding check node. If the answer
+        is deemed grounded (no feedback), it ends the workflow. If the answer is not
+        grounded but the maximum number of attempts has been reached, it ends the
+        workflow with a warning prepended to the answer. Otherwise, it routes back
+        to the answer generation node for another attempt.
+
+        Args:
+            state (CoreGraphState): The current state of the workflow after the grounding check.
+
+        Returns:
+            str: The name of the next node ('generate_answer' or END) or a directive.
+        """
+        try:
+            attempts = state.get('grounding_check_attempts', 0)
+            has_feedback = state.get('regeneration_feedback') is not None
+            self.logger.info(f"Routing after grounding check. Attempts: {attempts}. Feedback Present: {'Yes' if has_feedback else 'No'}")
+
+            # Check if Answer is Grounded
+            if not has_feedback:
+                # No feedback means the grounding check passed
+                self.logger.info("Answer is grounded. Ending workflow.")
+                return END
+
+            # Check Attempt Limit
+            max_attempts = getattr(self, 'max_grounding_attempts', 1)
+            if attempts >= max_attempts:
+                # Maximum attempts reached, end workflow with a warning
+                self.logger.warning(f"Max grounding attempts ({max_attempts}) reached. Answer still not grounded. Ending with warning.")
+                
+                # Prepend a warning message to the existing generation
+                original_generation = state.get("generation", "")
+                warning_message = ("**Self-Correction Incomplete:** The following answer could not be fully verified against the provided documents after attempts to correct it. Please use with caution.\n---\n")
+                state["generation"] = warning_message + original_generation
+                return END
+
+            # Route for Regeneration
+            # If not grounded and attempts remain, go back to generate the answer
+            self.logger.info("Answer not grounded, and attempts remain. Routing back to 'generate_answer'.")
+            return "generate_answer"
+
+        except Exception as e:
+            error_msg = f"Unexpected error in _route_after_grounding_check: {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            
+            try:
+                original_generation = state.get("generation", "")
+                error_message = f"**Workflow Error:** {error_msg}\n---\n"
+                state["generation"] = error_message + original_generation
+            except:
+                pass
+                
+            return END
+
+
+    def _retrieve_node(self, state: CoreGraphState) -> CoreGraphState:
+        """
+        Retrieve relevant documents from the vector store based on the question.
+
+        This node handles document retrieval. It ensures the vector store and retriever
+        for the specified collection are loaded, performs the retrieval using the
+        current question (potentially augmented with query analysis results), and
+        updates the state with the retrieved documents and context.
+
+        Args:
+            state (CoreGraphState): The current state of the workflow.
+
+        Returns:
+            CoreGraphState: The updated state with retrieved documents and context.
+        """
+        try:
+            self.logger.info("NODE: Starting document retrieval...")
+
+            # Determine Collection
+            collection_name = state.get("collection_name") or self.default_collection_name
+            self.logger.info(f"Retrieving documents from collection '{collection_name}' for question: '{state['question']}'")
+
+            try:
+                self._init_or_load_vectorstore(collection_name, recreate=False)
+                retriever = self.retrievers.get(collection_name)
+                
+                if not retriever:
+                    error_msg = f"No retriever found for collection '{collection_name}'."
+                    self.logger.warning(error_msg)
+
+                    # Update state to reflect the failure
+                    state["documents"] = []
+                    state["context"] = "Retriever not available for the specified collection."
+                    return state
+
+            except Exception as init_error:
+                error_msg = f"Error initializing or loading vector store/retriever for '{collection_name}': {init_error}"
+                self.logger.error(error_msg, exc_info=True)
+                state["documents"] = []
+                state["context"] = "Error occurred while initializing the retrieval system."
+                state["error_message"] = (state.get("error_message") or "") + f" | Retrieval init error: {init_error}"
+                return state
+
+            current_question = state["question"]
+            query_analysis: Optional[QueryAnalysis] = state.get("query_analysis_results")
+
+            # 1. Determine dynamic top_k based on query analysis
+            retrieval_k = self.default_retrieval_top_k
+            if query_analysis:
+                self.logger.info(
+                    f"Using query analysis for retrieval: Type='{query_analysis.query_type}', "
+                    f"Keywords='{query_analysis.extracted_keywords}'"
+                )
+                
+                if query_analysis.query_type in ["summary_request", "complex_reasoning"]:
+                    # For summaries / complex reasoning, retrieve more docs
+                    retrieval_k = max(self.default_retrieval_top_k, 7)
+                    self.logger.info(f"Adjusted top_k to {retrieval_k} for query type: {query_analysis.query_type}")
+                elif query_analysis.query_type == "factual_lookup":
+                    # For factual lookups, retrieve fewer docs
+                    retrieval_k = min(self.default_retrieval_top_k, 3)
+                    self.logger.info(f"Adjusted top_k to {retrieval_k} for query type: {query_analysis.query_type}")
+
+            # 2. Augment query with keywords (if any)
+            search_query = current_question
+            if query_analysis and query_analysis.extracted_keywords:
+                keywords_str = " ".join(query_analysis.extracted_keywords)
+                search_query = f"{current_question} Keywords: {keywords_str}"
+                self.logger.info(f"Augmented search query with keywords: '{search_query}'")
+
+            # Perform Retrieval
+            original_k = None # To store the original k value for restoration
+            try:
+                # Temporarily override retriever.k or retriever.search_kwargs['k'] if possible
                 if hasattr(retriever, "k"):
-                    retriever.k = original_k
+                    original_k = retriever.k
+                    retriever.k = retrieval_k
                 elif hasattr(retriever, "search_kwargs") and "k" in retriever.search_kwargs:
-                    retriever.search_kwargs["k"] = original_k
+                    original_k = retriever.search_kwargs["k"]
+                    retriever.search_kwargs["k"] = retrieval_k
+                else:
+                    self.logger.debug("Retriever does not support dynamic k adjustment.")
+
+                self.logger.info(f"Attempting to retrieve top {retrieval_k} docs for: '{search_query}'")
+                docs = retriever.invoke(search_query)
+                self.logger.info(f"Successfully retrieved {len(docs)} documents.")
+
+            except Exception as retrieval_error:
+                error_msg = f"Error during document retrieval for query '{search_query}': {retrieval_error}"
+                self.logger.error(error_msg, exc_info=True)
+                state["documents"] = []
+                state["context"] = "Error occurred during document retrieval."
+                state["error_message"] = (state.get("error_message") or "") + f" | Retrieval error: {retrieval_error}"
+                docs = []
+
+            finally:
+                # Restore Original Retriever Configuration
+                if original_k is not None:
+                    try:
+                        if hasattr(retriever, "k"):
+                            retriever.k = original_k
+                        elif hasattr(retriever, "search_kwargs") and "k" in retriever.search_kwargs:
+                            retriever.search_kwargs["k"] = original_k
+                        self.logger.debug(f"Restored retriever's original k value: {original_k}")
+                    except Exception as restore_error:
+                        self.logger.warning(f"Failed to restore retriever's original k value: {restore_error}")
+
+            # Update State with Results
+            state["documents"] = docs
+            state["context"] = "\n\n".join(d.page_content for d in docs)
+
+            self.logger.info("NODE: Document retrieval completed.")
             return state
 
-        # Restore original k if it was changed
-        if original_k is not None:
-            if hasattr(retriever, "k"):
-                retriever.k = original_k
-            elif hasattr(retriever, "search_kwargs") and "k" in retriever.search_kwargs:
-                retriever.search_kwargs["k"] = original_k
-
-        # 4. Update state
-        state["documents"] = docs
-        state["context"] = "\n\n".join(d.page_content for d in docs)
-        return state
+        except Exception as node_error:
+            error_msg = f"Unexpected error in _retrieve_node: {node_error}"
+            self.logger.critical(error_msg, exc_info=True)
+            state["documents"] = []
+            state["context"] = "A critical error occurred during the document retrieval process."
+            state["error_message"] = (state.get("error_message") or "") + f" | Critical retrieval node error: {node_error}"
+            return state
     
     def _rerank_documents_node(self, state: CoreGraphState) -> CoreGraphState:
-        self.logger.info("NODE: Re-ranking retrieved documents...")
-        question = state.get("original_question") or state["question"]
-        docs = state.get("documents", [])
+        """
+        Re-rank retrieved documents by their relevance score.
 
-        if not docs:
-            self.logger.info("No documents to re-rank.")
+        This node takes the documents retrieved by the `_retrieve_node` and re-ranks
+        them using a dedicated LLM-based re-ranking chain. This provides a more
+        nuanced ordering than vector similarity alone.
+
+        Args:
+            state (CoreGraphState): The current state of the workflow, containing documents.
+
+        Returns:
+            CoreGraphState: The updated state with re-ranked documents.
+        """
+        try:
+            self.logger.info("NODE: Starting document re-ranking...")
+
+            # Use the original question for re-ranking context
+            question = state.get("original_question") or state["question"]
+            docs = state.get("documents", [])
+
+            if not docs:
+                self.logger.info("No documents found in state to re-rank.")
+                return state # Return early, state is already correct
+
+            self.logger.info(f"Re-ranking {len(docs)} documents for question: '{question}'")
+
+            # Rerank Documents
+            docs_with_scores: List[Tuple[Document, float]] = []
+            
+            for idx, doc in enumerate(docs):
+                try:
+                    source_info = doc.metadata.get("source", "unknown")
+                    self.logger.debug(f"Re-ranking document {idx+1}/{len(docs)} from source '{source_info}'")
+
+                    # Invoke the re-ranker chain for this document-question pair
+                    score_result: RerankScore = self.document_reranker_chain.invoke({"question": question,
+                                                                                     "document_content": doc.page_content})
+
+                    # Store the document along with its relevance score
+                    docs_with_scores.append((doc, score_result.relevance_score))
+                    self.logger.debug(f"Document {idx+1} scored: {score_result.relevance_score}")
+
+                except Exception as doc_error:
+                    # If scoring a single document fails, log it and assign a low score
+                    source_info = doc.metadata.get("source", "unknown")
+                    
+                    error_msg = f"Error re-ranking document {idx+1} (source: {source_info}): {doc_error}"
+                    self.logger.error(error_msg, exc_info=True)
+                    
+                    # Assign score 0.0 for failed documents
+                    docs_with_scores.append((doc, 0.0))
+
+            # Sort Documents by Score
+            try:
+                # Sort the list of (document, score) tuples by score in descending order
+                sorted_docs_with_scores = sorted(docs_with_scores, key=lambda x: x[1], reverse=True)
+                
+                # Extract the re-ranked documents (discard scores for state update)
+                sorted_docs = [doc for doc, score in sorted_docs_with_scores]
+                
+                self.logger.info(f"Finished re-ranking. Top document score: {sorted_docs_with_scores[0][1] if sorted_docs_with_scores else 'N/A'}")
+
+            except Exception as sort_error:
+                error_msg = f"Error sorting re-ranked documents: {sort_error}"
+                self.logger.error(error_msg, exc_info=True)
+                # If sorting fails, keep the original order
+                sorted_docs = docs
+
+            # Update State
+            state["documents"] = sorted_docs
+
+            self.logger.info("NODE: Document re-ranking completed.")
             return state
 
-        docs_with_scores = []
-        for doc in docs:
-            try:
-                score_result: RerankScore = self.document_reranker_chain.invoke({
-                    "question": question,
-                    "document_content": doc.page_content
-                })
-                docs_with_scores.append((doc, score_result.relevance_score))
-                self.logger.debug(f"Document from '{doc.metadata.get('source')}' scored: {score_result.relevance_score}")
-            except Exception as e:
-                self.logger.error(f"Error re-ranking document: {e}. Assigning score of 0.")
-                docs_with_scores.append((doc, 0.0))
-
-        # Sort documents by score in descending order
-        sorted_docs = sorted(docs_with_scores, key=lambda x: x[1], reverse=True)
-        
-        # Update state with the re-ranked documents
-        state["documents"] = [doc for doc, score in sorted_docs]
-        self.logger.info("Finished re-ranking documents.")
-        
-        return state
+        except Exception as node_error:
+            error_msg = f"Unexpected error in _rerank_documents_node: {node_error}"
+            self.logger.critical(error_msg, exc_info=True)
+            state["error_message"] = (state.get("error_message") or "") + f" | Critical re-ranking node error: {node_error}"
+            return state
 
     def _grade_documents_node(self, state: CoreGraphState) -> CoreGraphState:
         self.logger.info("NODE: Grading documents individually...")
