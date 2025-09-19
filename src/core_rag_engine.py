@@ -2526,6 +2526,7 @@ class CoreRAGEngine:
             vs.add_documents(docs)
             self.logger.info(f"Added {len(docs)} docs to '{name}'")
 
+
     def ingest(
         self,
         sources: Union[Dict[str, Any], List[Dict[str, Any]], None] = None,
@@ -2533,50 +2534,113 @@ class CoreRAGEngine:
         recreate_collection: bool = False,
         direct_documents: Optional[List[Document]] = None
     ) -> None:
+        """
+        Ingest documents into a specified collection.
+
+        This method orchestrates the full ingestion pipeline: loading documents from sources,
+        splitting them into chunks, and indexing them into a Chroma vector store collection.
+        It supports ingesting from various source types (URLs, PDFs, text files, uploaded files)
+        or directly from a list of pre-loaded `Document` objects.
+
+        Args:
+            sources (Union[Dict[str, Any], List[Dict[str, Any]], None]):
+                A dictionary or list of dictionaries specifying document sources.
+                Each dict should have 'type' (e.g., 'url', 'pdf_path') and 'value'.
+                Example: [{"type": "url", "value": "https://example.com"}, ...]
+            collection_name (Optional[str]):
+                The name of the collection to ingest into. Defaults to `self.default_collection_name`.
+            recreate_collection (bool):
+                If True, removes the existing collection and creates a new one. Defaults to False.
+            direct_documents (Optional[List[Document]]):
+                A list of pre-loaded `Document` objects to ingest directly, bypassing the loading step.
+                If provided, the `sources` parameter is ignored.
+
+        Raises:
+            Exception: If any step in the ingestion process fails.
+        """
         try:
+            # Determine Target Collection
             name = collection_name or self.default_collection_name
-            self.logger.info(f"Starting ingestion for collection '{name}'. Recreate: {recreate_collection}")
+            self.logger.info(
+                f"Starting ingestion process for collection '{name}'. "
+                f"Recreate collection: {recreate_collection}"
+            )
 
             all_chunks_for_collection: List[Document] = []
 
+            # Handle Direct Documents
             if direct_documents is not None and isinstance(direct_documents, list) and direct_documents:
+                # If direct documents are provided, use them and skip loading from sources
                 if all(isinstance(doc, Document) for doc in direct_documents):
-                    self.logger.info(f"Using {len(direct_documents)} preloaded documents for ingestion.")
+                    self.logger.info(f"Using {len(direct_documents)} pre-loaded documents for ingestion.")
                     all_chunks_for_collection = self.split_documents(direct_documents)
                 else:
-                    self.logger.error("'direct_documents' provided but some items are not Document instances.")
+                    error_msg = "Invalid 'direct_documents' provided: not all items are Document instances."
+                    self.logger.error(error_msg)
+                    raise ValueError(error_msg)
+
+            # Handle Sources 
             elif sources is not None:
-                self.logger.info("Processing documents from `sources` parameter.")
+                # If sources are provided, load and process them
+                self.logger.info("Processing documents from the 'sources' parameter.")
+                
+                # Normalize sources to a list if it's a single dict
                 if not isinstance(sources, list):
                     sources = [sources]
-                for src in sources:
-                    src_type = src.get("type")
-                    src_val  = src.get("value")
-                    if not src_type or src_val is None:
-                        self.logger.warning(f"Skipping invalid source: {src}")
-                        continue
-                    raw_docs = self.load_documents(source_type=src_type, source_value=src_val)
-                    if raw_docs:
-                        chunks = self.split_documents(raw_docs)
-                        all_chunks_for_collection.extend(chunks)
 
+                for idx, src in enumerate(sources):
+                    try:
+                        src_type = src.get("type")
+                        src_val = src.get("value")
+
+                        if not src_type or src_val is None:
+                            self.logger.warning(f"Skipping invalid source at index {idx}: {src}")
+                            continue
+
+                        raw_docs = self.load_documents(source_type=src_type, source_value=src_val)
+                        
+                        if raw_docs:
+                            chunks = self.split_documents(raw_docs)
+                            all_chunks_for_collection.extend(chunks)
+                            self.logger.debug(f"Processed source {idx+1}/{len(sources)}: '{src_type}' -> {len(chunks)} chunks")
+
+                    except Exception as source_error:
+                        # Log error for individual source but continue with others
+                        self.logger.error(f"Error processing source {idx+1} ({src}): {source_error}", exc_info=True)
+                        
+            # Validate Documents to Ingest
             if not all_chunks_for_collection:
+                # No documents were prepared for ingestion
                 if recreate_collection:
-                    self.logger.info(f"No docs but recreate_collection=True. Clearing '{name}'.")
+                    # If recreation was requested but no new docs, just clear the existing collection
+                    self.logger.info(
+                        f"No new documents found, but recreate_collection=True. "
+                        f"Clearing/resetting collection '{name}'."
+                    )
                     self._init_or_load_vectorstore(name, recreate=True)
                 else:
-                    self.logger.warning(f"No documents to ingest for '{name}'. Skipping.")
+                    self.logger.warning(
+                        f"No documents available to ingest for collection '{name}'. "
+                        f"Ingestion process skipped."
+                    )
+                # Exit early as there's nothing to index
                 return
 
-            self.index_documents(
-                docs=all_chunks_for_collection,
-                name=name,
-                recreate=recreate_collection
+            self.logger.info(
+                f"Proceeding to index {len(all_chunks_for_collection)} document chunks "
+                f"into collection '{name}'."
             )
-        except Exception as e:
-            self.logger.error(f"Ingestion failed for collection '{name}': {e}", exc_info=True)
-            raise
-
+            try:
+                self.index_documents(docs=all_chunks_for_collection,
+                                     name=name,
+                                     recreate=recreate_collection)
+                self.logger.info(
+                    f"Ingestion completed successfully for collection '{name}' "
+                    f"({len(all_chunks_for_collection)} chunks indexed)."
+                )
+            except Exception as index_error:
+                error_msg = f"Failed to index documents into collection '{name}': {index_error}"
+        
     def answer_query(
         self,
         question: str,
