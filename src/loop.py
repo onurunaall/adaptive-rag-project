@@ -23,6 +23,11 @@ from src.stock import fetch_stock_news_documents
 from src.scraper import scrape_urls_as_documents
 from src.config import settings as app_settings
 
+try:
+    from langchain_tavily import TavilySearch
+    TAVILY_LANGCHAIN_AVAILABLE = True
+except ImportError:
+    TAVILY_LANGCHAIN_AVAILABLE = False
 
 class PlanStep(BaseModel):
     """A single step in the execution plan."""
