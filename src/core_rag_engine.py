@@ -2158,17 +2158,21 @@ class CoreRAGEngine:
                 continue
 
         if relevant_docs:
-            truncated_docs, was_truncated = self.context_manager.truncate_documents(documents=relevant_docs,
-                                                                                    question=question,
-                                                                                    strategy="smart")
-
+            # Truncate documents if needed
+            truncated_docs, was_truncated = self.context_manager.truncate_documents(
+                documents=relevant_docs,
+                question=question,
+                strategy="smart"
+            )
+            
+            # ✨ FIXED: Always set the flag
+            state["context_was_truncated"] = was_truncated
+            
             if was_truncated:
                 self.logger.warning(
                     f"Context truncated: {len(relevant_docs)} docs → {len(truncated_docs)} docs "
                     f"to fit within token limits"
                 )
-                
-                state["context_was_truncated"] = True
             
             self.logger.info(f"{len(truncated_docs)} document(s) passed relevance grading and truncation.")
             state["documents"] = truncated_docs
@@ -2179,6 +2183,7 @@ class CoreRAGEngine:
             state["documents"] = []
             state["context"] = "Retrieved content was not deemed relevant after grading."
             state["relevance_check_passed"] = False
+            state["context_was_truncated"] = False  # ✨ Set to False when no docs
 
         state["error_message"] = None
         return state
