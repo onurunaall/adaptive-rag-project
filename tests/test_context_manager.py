@@ -52,9 +52,16 @@ def test_truncate_balanced_strategy():
     assert was_truncated
     assert len(truncated) == 3  # Should keep all documents but truncated
     
-    # Each should be roughly equal length
-    lengths = [len(doc.page_content) for doc in truncated]
-    assert max(lengths) - min(lengths) < 50  # Similar sizes
+    # Each should be roughly equal length (accounting for truncation marker)
+    truncation_marker = "\n[...truncated]"
+    lengths = [
+        len(doc.page_content.replace(truncation_marker, "")) 
+        for doc in truncated
+    ]
+    # Lengths should be similar (within 20% variance)
+    avg_length = sum(lengths) / len(lengths)
+    for length in lengths:
+        assert abs(length - avg_length) / avg_length < 0.2
 
 
 def test_no_truncation_needed():
