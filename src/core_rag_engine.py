@@ -2259,6 +2259,7 @@ class CoreRAGEngine:
             self.logger.warning("Web search tool not configured.")
             state["context"] = "Web search tool is not available. Cannot perform web search."
             state["error_message"] = "Web search tool unavailable."
+            state["context_was_truncated"] = False
             return state
 
         try:
@@ -2286,19 +2287,34 @@ class CoreRAGEngine:
             state["web_search_results"] = processed_web_docs
 
             if processed_web_docs:
-                self.logger.info(f"Web search found {len(processed_web_docs)} documents.")
-                state["documents"] = processed_web_docs
-                state["context"]   = "\n\n".join(d.page_content for d in processed_web_docs)
+                truncated_docs, was_truncated = self.context_manager.truncate_documents(
+                    documents=processed_web_docs,
+                    question=current_question,
+                    strategy="smart"
+                )
+                
+                state["context_was_truncated"] = was_truncated
+                
+                if was_truncated:
+                    self.logger.warning(
+                        f"Web search results truncated: {len(processed_web_docs)} → {len(truncated_docs)} docs"
+                    )
+                
+                self.logger.info(f"Web search found {len(truncated_docs)} documents (after truncation).")
+                state["documents"] = truncated_docs
+                state["context"] = "\n\n".join(d.page_content for d in truncated_docs)
                 state["error_message"] = None
             else:
                 self.logger.info("Web search returned no relevant results.")
                 state["context"] = "Web search returned no relevant results or content."
+                state["context_was_truncated"] = False
 
         except Exception as e:
             self.logger.error(f"An error occurred during web search: {e}", exc_info=True)
             state["documents"] = []
-            state["context"]   = "An error occurred during web search. Unable to retrieve web results."
+            state["context"] = "An error occurred during web search. Unable to retrieve web results."
             state["error_message"] = f"Web search execution failed: {e}"
+            state["context_was_truncated"] = False
 
         return state
         
