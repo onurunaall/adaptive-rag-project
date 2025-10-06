@@ -1,3 +1,10 @@
+import sqlite3
+import json
+from typing import List, Dict, Any, Optional
+from pathlib import Path
+from datetime import datetime
+import re
+
 try:
     from mcp.server.fastmcp import FastMCP
     MCP_AVAILABLE = True
@@ -17,13 +24,6 @@ except ImportError:
             pass
     
     MCP_AVAILABLE = False
-  
-import sqlite3
-import json
-from typing import List, Dict, Any, Optional
-from pathlib import Path
-from datetime import datetime
-import re
 
 mcp = FastMCP("SQLRAG")
 
@@ -35,6 +35,7 @@ ALLOWED_SQL_KEYWORDS = {'SELECT', 'FROM', 'WHERE', 'JOIN', 'LEFT', 'RIGHT', 'INN
                         'ON', 'AND', 'OR', 'ORDER', 'BY', 'GROUP', 'HAVING', 
                         'LIMIT', 'OFFSET', 'AS', 'COUNT', 'SUM', 'AVG', 'MAX', 'MIN'}
 
+
 def validate_table_name(cursor, table_name: str) -> bool:
     """Validate that a table name exists in the database."""
     cursor.execute(
@@ -43,11 +44,33 @@ def validate_table_name(cursor, table_name: str) -> bool:
     )
     return cursor.fetchone() is not None
 
+
 def validate_column_names(cursor, table_name: str, column_names: List[str]) -> bool:
     """Validate that column names exist in the specified table."""
-    cursor.execute(f"PRAGMA table_info({table_name})")
+    cursor.execute(f"PRAGMA table_info({_quote_identifier(table_name)})")
     valid_columns = {col[1] for col in cursor.fetchall()}
     return all(col in valid_columns for col in column_names)
+
+
+def _quote_identifier(identifier: str) -> str:
+    """
+    Safely quote SQL identifiers (table/column names) to prevent injection.
+    SQLite uses double quotes for identifiers.
+    """
+    # Remove any existing quotes and escape internal quotes
+    identifier = identifier.replace('"', '""')
+    return f'"{identifier}"'
+
+
+def _sanitize_identifier(identifier: str) -> str:
+    """
+    Validate and sanitize SQL identifiers.
+    Only allows alphanumeric, underscore, and dollar sign.
+    """
+    if not re.match(r'^[a-zA-Z_$][a-zA-Z0-9_$]*$', identifier):
+        raise ValueError(f"Invalid identifier: {identifier}")
+    return identifier
+
 
 @mcp.tool()
 async def query_structured_data(
@@ -81,13 +104,29 @@ async def query_structured_data(
                 }
             
             # Check for dangerous keywords
-            dangerous_keywords = ['DROP', 'DELETE', 'INSERT', 'UPDATE', 'ALTER', 'CREATE', 'EXEC', 'EXECUTE']
+            dangerous_keywords = ['DROP', 'DELETE', 'INSERT', 'UPDATE', 'ALTER', 
+                                'CREATE', 'EXEC', 'EXECUTE', 'ATTACH', 'DETACH',
+                                'PRAGMA', 'VACUUM', 'REINDEX']
             for keyword in dangerous_keywords:
-                if keyword in query_upper:
+                if re.search(rf'\b{keyword}\b', query_upper):
                     return {
                         "success": False,
                         "error": f"Query contains forbidden keyword: {keyword}"
                     }
+            
+            # Check for SQL comments that could hide malicious code
+            if '--' in query or '/*' in query or '*/' in query:
+                return {
+                    "success": False,
+                    "error": "SQL comments are not allowed"
+                }
+            
+            # Check for semicolons (prevents query stacking)
+            if ';' in query.rstrip(';'):
+                return {
+                    "success": False,
+                    "error": "Multiple statements are not allowed"
+                }
         
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
@@ -133,6 +172,7 @@ async def query_structured_data(
             "error": str(e)
         }
 
+
 @mcp.tool()
 async def get_database_schema(db_path: str) -> dict:
     """
@@ -148,28 +188,31 @@ async def get_database_schema(db_path: str) -> dict:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         
-        # Get all tables
+        # Get all tables - using parameterized query
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = [row[0] for row in cursor.fetchall()]
         
         schema = {"tables": {}}
         
         for table in tables:
-            # Validate table name (already from sqlite_master, so safe)
-            # Get table info using parameterized query where possible
-            cursor.execute(f"PRAGMA table_info({table})")
+            # Validate and quote table name for PRAGMA statements
+            sanitized_table = _sanitize_identifier(table)
+            quoted_table = _quote_identifier(sanitized_table)
+            
+            # Get table info using PRAGMA (safe from injection since we validated)
+            cursor.execute(f"PRAGMA table_info({quoted_table})")
             columns = cursor.fetchall()
             
-            # Get row count safely
-            cursor.execute(f"SELECT COUNT(*) FROM {table}")
+            # Get row count safely using parameterized identifier
+            cursor.execute(f"SELECT COUNT(*) FROM {quoted_table}")
             row_count = cursor.fetchone()[0]
             
             # Get indexes
-            cursor.execute(f"PRAGMA index_list({table})")
+            cursor.execute(f"PRAGMA index_list({quoted_table})")
             indexes = [row[1] for row in cursor.fetchall()]
             
             # Get foreign keys
-            cursor.execute(f"PRAGMA foreign_key_list({table})")
+            cursor.execute(f"PRAGMA foreign_key_list({quoted_table})")
             foreign_keys = [
                 {"column": row[3], "ref_table": row[2], "ref_column": row[4]}
                 for row in cursor.fetchall()
@@ -206,6 +249,7 @@ async def get_database_schema(db_path: str) -> dict:
             "error": str(e)
         }
 
+
 @mcp.tool()
 async def get_table_sample(
     db_path: str,
@@ -227,7 +271,7 @@ async def get_table_sample(
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         
-        # Validate table name
+        # Validate table name exists
         if not validate_table_name(cursor, table_name):
             conn.close()
             return {
@@ -235,14 +279,18 @@ async def get_table_sample(
                 "error": f"Table '{table_name}' does not exist"
             }
         
-        # Safe query since table name is validated
-        query = f"SELECT * FROM {table_name} LIMIT ?"
+        # Sanitize and quote the table name
+        sanitized_table = _sanitize_identifier(table_name)
+        quoted_table = _quote_identifier(sanitized_table)
+        
+        # Safe query with parameterized LIMIT
+        query = f"SELECT * FROM {quoted_table} LIMIT ?"
         cursor.execute(query, (sample_size,))
         
         rows = cursor.fetchall()
         
-        # Get column names
-        cursor.execute(f"PRAGMA table_info({table_name})")
+        # Get column names safely
+        cursor.execute(f"PRAGMA table_info({quoted_table})")
         columns = [col[1] for col in cursor.fetchall()]
         
         # Convert to list of dicts
@@ -265,6 +313,7 @@ async def get_table_sample(
             "error": str(e)
         }
 
+
 @mcp.tool()
 async def natural_language_to_sql(
     question: str,
@@ -274,8 +323,8 @@ async def natural_language_to_sql(
     llm_model: Optional[str] = None
 ) -> dict:
     """
-    Convert natural language to SQL with improved pattern matching.
-    For production, integrate with LLM for better conversion.
+    Convert natural language to SQL with improved safety.
+    Uses parameterized queries and validated identifiers.
     
     Args:
         question: Natural language question
@@ -310,7 +359,6 @@ async def natural_language_to_sql(
         
         for table_name in schema["tables"].keys():
             table_lower = table_name.lower()
-            # Score based on matching words
             score = 0
             if table_lower in question_lower:
                 score += 10
@@ -327,18 +375,26 @@ async def natural_language_to_sql(
         if not relevant_table:
             relevant_table = list(schema["tables"].keys())[0]
         
-        # Extract conditions and operations
+        # Sanitize and quote table name
+        sanitized_table = _sanitize_identifier(relevant_table)
+        quoted_table = _quote_identifier(sanitized_table)
+        
+        # Extract columns safely
         columns = schema["tables"][relevant_table]["columns"]
         column_names = [col["name"] for col in columns]
         
-        # Build SQL based on patterns
+        # Build SQL based on patterns using safe identifiers
         sql = None
         explanation = None
+        
+        # Helper function to safely quote column names
+        def safe_column(col_name: str) -> str:
+            sanitized = _sanitize_identifier(col_name)
+            return _quote_identifier(sanitized)
         
         # COUNT patterns
         if any(word in question_lower for word in ["count", "how many", "number of", "total"]):
             if "group by" in question_lower or "per" in question_lower or "by" in question_lower:
-                # Try to find grouping column
                 group_col = None
                 for col in column_names:
                     if col.lower() in question_lower and col.lower() not in ["id", "created", "updated"]:
@@ -346,13 +402,14 @@ async def natural_language_to_sql(
                         break
                 
                 if group_col:
-                    sql = f"SELECT {group_col}, COUNT(*) as count FROM {relevant_table} GROUP BY {group_col}"
+                    safe_col = safe_column(group_col)
+                    sql = f"SELECT {safe_col}, COUNT(*) as count FROM {quoted_table} GROUP BY {safe_col}"
                     explanation = f"Counting rows grouped by {group_col}"
                 else:
-                    sql = f"SELECT COUNT(*) as total_count FROM {relevant_table}"
+                    sql = f"SELECT COUNT(*) as total_count FROM {quoted_table}"
                     explanation = f"Counting total rows in {relevant_table}"
             else:
-                sql = f"SELECT COUNT(*) as total_count FROM {relevant_table}"
+                sql = f"SELECT COUNT(*) as total_count FROM {quoted_table}"
                 explanation = f"Counting total rows in {relevant_table}"
         
         # AVERAGE/SUM/MAX/MIN patterns
@@ -360,28 +417,32 @@ async def natural_language_to_sql(
             numeric_cols = [col["name"] for col in columns if "INT" in col["type"] or "REAL" in col["type"]]
             if numeric_cols:
                 col = numeric_cols[0]
-                sql = f"SELECT AVG({col}) as average_{col} FROM {relevant_table}"
+                safe_col = safe_column(col)
+                sql = f"SELECT AVG({safe_col}) as average_{_sanitize_identifier(col)} FROM {quoted_table}"
                 explanation = f"Calculating average of {col}"
         
         elif any(word in question_lower for word in ["sum", "total"]):
             numeric_cols = [col["name"] for col in columns if "INT" in col["type"] or "REAL" in col["type"]]
             if numeric_cols:
                 col = numeric_cols[0]
-                sql = f"SELECT SUM({col}) as total_{col} FROM {relevant_table}"
+                safe_col = safe_column(col)
+                sql = f"SELECT SUM({safe_col}) as total_{_sanitize_identifier(col)} FROM {quoted_table}"
                 explanation = f"Calculating sum of {col}"
         
         elif any(word in question_lower for word in ["maximum", "max", "highest", "largest"]):
             numeric_cols = [col["name"] for col in columns if "INT" in col["type"] or "REAL" in col["type"]]
             if numeric_cols:
                 col = numeric_cols[0]
-                sql = f"SELECT MAX({col}) as max_{col}, * FROM {relevant_table} ORDER BY {col} DESC LIMIT 1"
+                safe_col = safe_column(col)
+                sql = f"SELECT MAX({safe_col}) as max_{_sanitize_identifier(col)}, * FROM {quoted_table} ORDER BY {safe_col} DESC LIMIT 1"
                 explanation = f"Finding maximum {col} value"
         
         elif any(word in question_lower for word in ["minimum", "min", "lowest", "smallest"]):
             numeric_cols = [col["name"] for col in columns if "INT" in col["type"] or "REAL" in col["type"]]
             if numeric_cols:
                 col = numeric_cols[0]
-                sql = f"SELECT MIN({col}) as min_{col}, * FROM {relevant_table} ORDER BY {col} ASC LIMIT 1"
+                safe_col = safe_column(col)
+                sql = f"SELECT MIN({safe_col}) as min_{_sanitize_identifier(col)}, * FROM {quoted_table} ORDER BY {safe_col} ASC LIMIT 1"
                 explanation = f"Finding minimum {col} value"
         
         # TIME-based patterns
@@ -390,10 +451,11 @@ async def natural_language_to_sql(
                         if any(t in col["name"].lower() for t in ["date", "time", "created", "updated", "timestamp"])]
             if date_cols:
                 date_col = date_cols[0]
-                sql = f"SELECT * FROM {relevant_table} ORDER BY {date_col} DESC LIMIT 10"
+                safe_col = safe_column(date_col)
+                sql = f"SELECT * FROM {quoted_table} ORDER BY {safe_col} DESC LIMIT 10"
                 explanation = f"Getting latest records ordered by {date_col}"
             else:
-                sql = f"SELECT * FROM {relevant_table} LIMIT 10"
+                sql = f"SELECT * FROM {quoted_table} LIMIT 10"
                 explanation = f"Getting sample records from {relevant_table}"
         
         elif any(word in question_lower for word in ["oldest", "earliest", "first"]):
@@ -401,18 +463,13 @@ async def natural_language_to_sql(
                         if any(t in col["name"].lower() for t in ["date", "time", "created", "updated", "timestamp"])]
             if date_cols:
                 date_col = date_cols[0]
-                sql = f"SELECT * FROM {relevant_table} ORDER BY {date_col} ASC LIMIT 10"
+                safe_col = safe_column(date_col)
+                sql = f"SELECT * FROM {quoted_table} ORDER BY {safe_col} ASC LIMIT 10"
                 explanation = f"Getting oldest records ordered by {date_col}"
-        
-        # FILTER patterns
-        elif "where" in question_lower or "filter" in question_lower or "only" in question_lower:
-            # Try to extract filter conditions
-            sql = f"SELECT * FROM {relevant_table} WHERE 1=1 LIMIT 20"
-            explanation = f"Filtered query on {relevant_table} (add specific conditions)"
         
         # Default: SELECT all with limit
         else:
-            sql = f"SELECT * FROM {relevant_table} LIMIT 20"
+            sql = f"SELECT * FROM {quoted_table} LIMIT 20"
             explanation = f"Getting sample data from {relevant_table}"
         
         return {
@@ -422,7 +479,7 @@ async def natural_language_to_sql(
             "explanation": explanation,
             "table_used": relevant_table,
             "available_columns": column_names,
-            "note": "For production use, integrate with LLM for better SQL generation"
+            "note": "SQL generated using parameterized identifiers for security"
         }
         
     except Exception as e:
@@ -430,6 +487,7 @@ async def natural_language_to_sql(
             "success": False,
             "error": str(e)
         }
+
 
 @mcp.tool()
 async def create_rag_context_from_db(
@@ -539,6 +597,7 @@ async def create_rag_context_from_db(
             "error": str(e)
         }
 
+
 @mcp.tool()
 async def execute_batch_queries(
     queries: List[str],
@@ -583,9 +642,10 @@ async def execute_batch_queries(
             "error": str(e)
         }
 
+
 if __name__ == "__main__":
     if MCP_AVAILABLE:
-            mcp.run(transport="stdio")
+        mcp.run(transport="stdio")
     else:
         print("MCP package not available. Server cannot run.")
         print("Install with: pip install mcp>=1.6.0")
