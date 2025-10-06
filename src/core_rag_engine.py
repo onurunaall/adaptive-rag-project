@@ -29,6 +29,7 @@ from src.config import settings as app_settings
 from src.chunking import AdaptiveChunker, BaseChunker, HybridChunker
 from src.hybrid_search import HybridRetriever, AdaptiveHybridRetriever
 from src.advanced_grounding import MultiLevelGroundingChecker, AdvancedGroundingCheck
+from src.context_manager import ContextManager
 
 try:
     from streamlit.runtime.uploaded_file_manager import UploadedFile 
@@ -113,6 +114,7 @@ class CoreGraphState(TypedDict):
     regeneration_feedback: Optional[str]
     collection_name: Optional[str]
     chat_history: Optional[List[BaseMessage]]
+    context_was_truncated: Optional[bool]
 
 
 class CoreRAGEngine:
@@ -224,6 +226,9 @@ class CoreRAGEngine:
         self.document_cache = {}
         self.cache_ttl = 300  # 5 minutes Time-To-Live for cached documents
         self.cache_timestamps = {}
+
+        self.context_manager = ContextManager(model_name=self.llm_model_name,
+                                              reserved_tokens=1000)
 
         self.logger.info("CoreRAGEngine initialization complete and workflow compiled.")
         
@@ -1209,44 +1214,6 @@ class CoreRAGEngine:
                                                       partial_variables={"format_instructions": parser.get_format_instructions()})
             
             chain = prompt | self.json_llm | PydanticOutputParser(pydantic_object=RelevanceGrade)
-            
-            self.logger.info("Document relevance grader chain created successfully with PydanticOutputParser.")
-            return chain
-
-        except Exception as e:
-            error_msg = f"Failed to create document relevance grader chain: {e}"
-            self.logger.critical(error_msg, exc_info=True)
-            raise RuntimeError(error_msg) from e
-
-
-    def _create_document_relevance_grader_chain(self) -> Runnable:
-        """
-        Create chain for grading document relevance to questions.
-
-        This method constructs a LangChain Runnable that takes a question and a document excerpt,
-        and uses a JSON-formatted LLM to assess the document's relevance to the question,
-        returning a structured `RelevanceGrade` object.
-
-        Returns:
-            Runnable: A configured chain for document relevance grading.
-        """
-        try:
-            parser = PydanticOutputParser(pydantic_object=RelevanceGrade)
-            prompt_template = (
-                "You are a document relevance grader. Your task is to assess if a given document excerpt "
-                "is relevant to the provided question.\n"
-                "Respond with a JSON object matching this schema:\n"
-                "{format_instructions}\n"
-                "Question: {question}\n"
-                "Document Excerpt:\n---\n{document_content}\n---\n"
-                "Provide your JSON response:"
-            )
-            
-            # Create the prompt template, partially filling in the format instructions
-            prompt = ChatPromptTemplate.from_template(template=prompt_template,
-                                                      partial_variables={"format_instructions": parser.get_format_instructions()})
-            
-            chain = prompt | self.json_llm | PydanticOutputParser(pydantic_object=RelevanceGrade)
 
             self.logger.info("Document relevance grader chain created successfully with PydanticOutputParser.")
             return chain
@@ -2191,9 +2158,21 @@ class CoreRAGEngine:
                 continue
 
         if relevant_docs:
-            self.logger.info(f"{len(relevant_docs)} document(s) passed relevance grading.")
-            state["documents"] = relevant_docs
-            state["context"] = "\n\n".join(d.page_content for d in relevant_docs)
+            truncated_docs, was_truncated = self.context_manager.truncate_documents(documents=relevant_docs,
+                                                                                    question=question,
+                                                                                    strategy="smart")
+
+            if was_truncated:
+                self.logger.warning(
+                    f"Context truncated: {len(relevant_docs)} docs → {len(truncated_docs)} docs "
+                    f"to fit within token limits"
+                )
+                
+                state["context_was_truncated"] = True
+            
+            self.logger.info(f"{len(truncated_docs)} document(s) passed relevance grading and truncation.")
+            state["documents"] = truncated_docs
+            state["context"] = "\n\n".join(d.page_content for d in truncated_docs)
             state["relevance_check_passed"] = True
         else:
             self.logger.info("No documents deemed relevant after grading.")
@@ -2325,6 +2304,14 @@ class CoreRAGEngine:
         context = state.get("context", "")
         chat_history = state.get("chat_history", [])
         regeneration_feedback = state.get("regeneration_feedback")
+
+        if state.get("documents"):
+            context_stats = self.context_manager.get_context_summary(state["documents"])
+            self.logger.info(
+                f"Context stats: {context_stats['document_count']} docs, "
+                f"{context_stats['total_tokens']} tokens "
+                f"({context_stats['token_utilization']:.1%} of limit)"
+            )
     
         input_data_for_chain = {
             "context": context,
