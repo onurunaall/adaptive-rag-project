@@ -75,7 +75,12 @@ class EngineSettings(BaseSettings):
     enable_hybrid_search: bool = False
     hybrid_search_alpha: float = 0.7  # Weight for semantic vs keyword search
     enable_advanced_grounding: bool = False
-
+    cache_ttl_seconds: int = 300  # 5 minutes
+    max_cache_size_mb: float = 500.0  # 500 MB
+    warn_large_collection_threshold: int = 10000  # Warn if >10k docs
+    max_hybrid_search_documents: int = 50000  # Limit for BM25 performance
+    enable_streaming_for_large_collections: bool = True
+    
     model_config = SettingsConfigDict(env_prefix='', extra='ignore')
 
 
