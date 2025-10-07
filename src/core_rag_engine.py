@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 import tempfile
 import shutil
@@ -120,6 +121,17 @@ class CoreGraphState(TypedDict):
 class CoreRAGEngine:
     """
     Core RAG engine: ingestion, indexing, and adaptive querying via LangGraph.
+    
+    IMPORTANT: Document Cache Management
+    --------------------------------------
+    This engine maintains an in-memory cache of documents for performance.
+    The cache is automatically invalidated when using the public API methods:
+    - ingest()
+    - index_documents()
+    
+    However, if you directly manipulate self.vectorstores[name] (internal API),
+    you must manually call self._invalidate_collection_cache(name) to ensure
+    cache consistency.
     """
     def __init__(self,
                  llm_provider: Optional[str] = None,
@@ -1358,8 +1370,11 @@ class CoreRAGEngine:
             error_msg = f"Unexpected error in _grounding_check_node: {node_error}"
             self.logger.critical(error_msg, exc_info=True)
             
-            state["regeneration_feedback"] = f"A critical system error occurred in the grounding check node: {node_error}. Please try to generate a concise answer based on context."
-            state["error_message"] = (state.get("error_message") or "") + f" | Critical grounding node error: {node_error}"
+            state["regeneration_feedback"] = (
+                f"A critical system error occurred in the grounding check node: {node_error}. "
+                f"Please try to generate a concise answer based on context."
+            )
+            self._append_error(state, f"Critical grounding node error: {node_error}")  # ✨ FIXED
 
             raise RuntimeError(error_msg) from node_error
 
@@ -1914,7 +1929,7 @@ class CoreRAGEngine:
                 self.logger.error(error_msg, exc_info=True)
                 state["documents"] = []
                 state["context"] = "Error occurred while initializing the retrieval system."
-                state["error_message"] = (state.get("error_message") or "") + f" | Retrieval init error: {init_error}"
+                self._append_error(state, f"Retrieval init error: {init_error}")
                 return state
 
             current_question = state["question"]
@@ -2166,7 +2181,7 @@ class CoreRAGEngine:
         except Exception as e:
             self.logger.error(f"Query analysis failed: {e}", exc_info=True)
             state["query_analysis_results"] = None
-            state["error_message"] = (state.get("error_message") or "") + f" | Query analysis failed: {e}"
+            self._append_error(state, f"Query analysis failed: {e}")
 
         if state.get("original_question") is None:
             state["original_question"] = question
@@ -2193,7 +2208,8 @@ class CoreRAGEngine:
             self.logger.error(f"Error during query rewriting: {e}", exc_info=True)
             # If rewriting fails, fall back to the original question.
             state["question"] = original_question
-            state["error_message"] = f"Query rewriting failed: {e}"
+            self._append_error(state, f"Query rewriting failed: {e}")
+
         return state
 
     def _web_search_node(self, state: CoreGraphState) -> CoreGraphState:
@@ -2211,8 +2227,7 @@ class CoreRAGEngine:
         if not self.search_tool:
             self.logger.warning("Web search tool not configured.")
             state["context"] = "Web search tool is not available. Cannot perform web search."
-            state["error_message"] = "Web search tool unavailable."
-            state["context_was_truncated"] = False
+            self._append_error(state, "Web search tool unavailable")
             return state
 
         try:
@@ -2266,8 +2281,7 @@ class CoreRAGEngine:
             self.logger.error(f"An error occurred during web search: {e}", exc_info=True)
             state["documents"] = []
             state["context"] = "An error occurred during web search. Unable to retrieve web results."
-            state["error_message"] = f"Web search execution failed: {e}"
-            state["context_was_truncated"] = False
+            self._append_error(state, f"Web search execution failed: {e}")
 
         return state
         
@@ -2305,10 +2319,12 @@ class CoreRAGEngine:
         try:
             generated_text = self.answer_generation_chain.invoke(input_data_for_chain)
             state["generation"] = generated_text.strip()
+            self._clear_error(state)
         except Exception as e:
             self.logger.error(f"Generation error: {e}", exc_info=True)
             state["generation"] = "Error generating answer."
-            state["error_message"] = str(e)
+            self._append_error(state, f"Answer generation failed: {e}")
+        
         return state
     
     def _increment_retries_node(self, state: CoreGraphState) -> CoreGraphState:
@@ -2696,28 +2712,33 @@ class CoreRAGEngine:
         Get statistics about the document cache.
         
         Returns:
-            Dictionary with cache statistics
+            Dictionary with cache statistics including:
+            - cached_collections: Number of collections in cache
+            - collection_names: List of cached collection names  
+            - total_documents: Total number of documents across all caches
+            - estimated_memory_mb: Approximate memory usage (rough estimate based on sys.getsizeof)
+            - cache_timestamps: When each collection was last cached
+            
+        Note: Memory estimation is approximate and doesn't include all referenced objects.
         """
         try:
-            import sys
-            
             total_docs = sum(len(docs) for docs in self.document_cache.values())
             
-            # Estimate memory usage
-            total_memory_bytes = sum(
-                sys.getsizeof(docs) for docs in self.document_cache.values()
-            )
+            # Estimate memory usage (rough approximation)
+            total_memory_bytes = 0
             
-            # Add memory for document content
             for docs in self.document_cache.values():
+                total_memory_bytes += sys.getsizeof(docs)  # List overhead
                 for doc in docs:
-                    total_memory_bytes += sys.getsizeof(doc.page_content)
+                    total_memory_bytes += sys.getsizeof(doc)  # Document object
+                    total_memory_bytes += sys.getsizeof(doc.page_content)  # Content string
+                    total_memory_bytes += sys.getsizeof(doc.metadata)  # Metadata dict
             
             return {
                 "cached_collections": len(self.document_cache),
                 "collection_names": list(self.document_cache.keys()),
                 "total_documents": total_docs,
-                "estimated_memory_mb": total_memory_bytes / (1024 * 1024),
+                "estimated_memory_mb": round(total_memory_bytes / (1024 * 1024), 2),
                 "cache_timestamps": {
                     name: timestamp 
                     for name, timestamp in self.cache_timestamps.items()
@@ -2823,13 +2844,8 @@ class CoreRAGEngine:
         question: str,
         collection_name: Optional[str] = None,
         chat_history: Optional[List[BaseMessage]] = None) -> Dict[str, Any]:
-        """
-        Execute the full RAG workflow asynchronously using the specified collection.
-        """
-        # Resolve collection name
-        collection = collection_name or self.default_collection_name
-
-        # Initialize the workflow state
+    
+        name = collection_name or self.default_collection_name
         initial_state: CoreGraphState = {
             "question": question,
             "original_question": question,
@@ -2844,27 +2860,44 @@ class CoreRAGEngine:
             "error_message": None,
             "grounding_check_attempts": 0,
             "regeneration_feedback": None,
-            "collection_name": collection,
+            "collection_name": name,
             "chat_history": chat_history or [],
+            "context_was_truncated": False
         }
+        
+        try:
+            final = await self.rag_workflow.ainvoke(initial_state)
+        except Exception as e:
+            self.logger.error(f"Workflow execution failed: {e}", exc_info=True)
+            # Return partial results with error
+            return {
+                "answer": "I apologize, but I encountered an error while processing your question.",
+                "sources": [],
+                "error": str(e),
+                "error_summary": {"has_error": True, "errors": [str(e)]}
+            }
 
-        # Run the workflow to completion
-        final_state = await self.rag_workflow.ainvoke(initial_state)
-
-        # Extract answer and documents
-        answer = final_state.get("generation", "")
-        documents = final_state.get("documents", [])
-
-        # Format sources for response
+        answer = final.get("generation", "")
+        docs = final.get("documents", [])
         sources = [
             {
-                "source": doc.metadata.get("source", "unknown"),
-                "preview": doc.page_content[:200] + "..."
+                "source": d.metadata.get("source", "unknown"),
+                "preview": d.page_content[:200] + "..."
             }
-            for doc in documents
+            for d in docs
         ]
 
-        return {"answer": answer, "sources": sources}
+        result = {
+            "answer": answer,
+            "sources": sources
+        }
+        
+        error_summary = self.get_error_summary(final)
+        if error_summary:
+            result["error_summary"] = error_summary
+            self.logger.warning(f"Workflow completed with errors: {error_summary}")
+        
+        return result
 										
     def run_full_rag_workflow_sync(
         self,
@@ -2912,3 +2945,79 @@ class CoreRAGEngine:
             finally:
                 new_loop.close()
 
+
+    def _append_error(self, state: CoreGraphState, error_msg: str) -> None:
+        """
+        Safely append an error message to the state's error_message field.
+        
+        Args:
+            state: Current workflow state
+            error_msg: Error message to append
+        """
+        try:
+            current_error = state.get("error_message")
+            
+            if current_error:
+                # Append with separator
+                state["error_message"] = f"{current_error} | {error_msg}"
+            else:
+                # First error
+                state["error_message"] = error_msg
+                
+            self.logger.debug(f"Error appended to state: {error_msg}")
+            
+        except Exception as e:
+            # Even error handling can fail!
+            self.logger.critical(f"Failed to append error to state: {e}", exc_info=True)
+            # Last resort: overwrite
+            state["error_message"] = f"ERROR HANDLING FAILED: {error_msg}"
+
+
+    def _clear_error(self, state: CoreGraphState) -> None:
+        """
+        Clear the error message from state.
+        
+        Args:
+            state: Current workflow state
+        """
+        state["error_message"] = None
+
+
+    def _has_error(self, state: CoreGraphState) -> bool:
+        """
+        Check if state has an error.
+        
+        Args:
+            state: Current workflow state
+            
+        Returns:
+            True if state contains an error message
+        """
+        return bool(state.get("error_message"))
+    
+    
+    def get_error_summary(self, state: CoreGraphState) -> Optional[Dict[str, Any]]:
+        """
+        Get a structured summary of errors in the state.
+        
+        Args:
+            state: Current workflow state
+            
+        Returns:
+            Dictionary with error information, or None if no errors
+        """
+        if not self._has_error(state):
+            return None
+        
+        error_msg = state.get("error_message", "")
+        
+        # Parse errors (split by delimiter)
+        error_list = [e.strip() for e in error_msg.split("|") if e.strip()]
+        
+        return {
+            "has_error": True,
+            "error_count": len(error_list),
+            "errors": error_list,
+            "full_message": error_msg,
+            "severity": "critical" if "critical" in error_msg.lower() else "error"
+        }

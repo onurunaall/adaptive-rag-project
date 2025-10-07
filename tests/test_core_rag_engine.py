@@ -442,3 +442,64 @@ def test_invalidate_all_caches(rag_engine):
     stats_after = rag_engine.get_cache_stats()
     assert stats_after["cached_collections"] == 0
     assert stats_after["total_documents"] == 0
+    
+    
+def test_error_appending(rag_engine):
+    """Test that errors are properly appended."""
+    state = {"error_message": None}
+    
+    # First error
+    rag_engine._append_error(state, "First error")
+    assert state["error_message"] == "First error"
+    
+    # Second error
+    rag_engine._append_error(state, "Second error")
+    assert state["error_message"] == "First error | Second error"
+    
+    # Third error
+    rag_engine._append_error(state, "Third error")
+    assert "First error" in state["error_message"]
+    assert "Second error" in state["error_message"]
+    assert "Third error" in state["error_message"]
+
+
+def test_error_clearing(rag_engine):
+    """Test that errors can be cleared."""
+    state = {"error_message": "Some error"}
+    
+    rag_engine._clear_error(state)
+    assert state["error_message"] is None
+
+
+def test_has_error(rag_engine):
+    """Test error detection."""
+    state1 = {"error_message": None}
+    assert not rag_engine._has_error(state1)
+    
+    state2 = {"error_message": ""}
+    assert not rag_engine._has_error(state2)
+    
+    state3 = {"error_message": "Error occurred"}
+    assert rag_engine._has_error(state3)
+
+
+def test_error_summary(rag_engine):
+    """Test error summary generation."""
+    state = {"error_message": "Error 1 | Error 2 | Critical error 3"}
+    
+    summary = rag_engine.get_error_summary(state)
+    
+    assert summary is not None
+    assert summary["has_error"] is True
+    assert summary["error_count"] == 3
+    assert len(summary["errors"]) == 3
+    assert "Error 1" in summary["errors"]
+    assert summary["severity"] == "critical"
+
+
+def test_no_error_summary(rag_engine):
+    """Test error summary when no errors."""
+    state = {"error_message": None}
+    
+    summary = rag_engine.get_error_summary(state)
+    assert summary is None
