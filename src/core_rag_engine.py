@@ -244,123 +244,237 @@ class CoreRAGEngine:
 
         self.logger.info("CoreRAGEngine initialization complete and workflow compiled.")
         
-    
-    def _get_all_documents_from_collection(self, collection_name: str) -> List[Document]:
+
+    def _stream_documents_from_collection(
+        self,
+        collection_name: str,
+        batch_size: int = 1000
+    ) -> Iterator[List[Document]]:
         """
-        Retrieve all documents from a specified collection with caching and memory optimization.
-
-        This method fetches all documents from the vector store's underlying Chroma collection,
-        batching the retrieval to manage memory usage for large collections. It also implements
-        a simple in-memory cache with a Time-To-Live (TTL) to improve performance on repeated calls.
-
+        Stream documents from a collection in batches (memory-efficient).
+        
         Args:
-            collection_name (str): The name of the collection to retrieve documents from.
-
-        Returns:
-            List[Document]: A list of all Document objects in the collection, or an empty list
-                            if the collection doesn't exist, is empty, or an error occurs.
+            collection_name: Collection to stream from
+            batch_size: Number of documents per batch
+            
+        Yields:
+            Batches of Document objects
         """
-        import time
-
-        # --- Cache Check ---
-        cache_key = collection_name
-        current_time = time.time()
-
-        # Check if we have a fresh cached version
-        if cache_key in self.document_cache:
-            cache_age = current_time - self.cache_timestamps.get(cache_key, 0)
-            if cache_age < self.cache_ttl:
-                self.logger.debug(f"Cache HIT: Using cached documents for '{collection_name}' (Age: {cache_age:.1f}s)")
-                return self.document_cache[cache_key]
-            else:
-                self.logger.debug(f"Cache EXPIRED: Cached documents for '{collection_name}' are stale (Age: {cache_age:.1f}s)")
-
-        # --- Retrieval from Vector Store ---
         try:
             vectorstore = self.vectorstores.get(collection_name)
             if not vectorstore:
-                self.logger.warning(f"Vector store for collection '{collection_name}' not found in memory.")
-                return []
-
-            # --- Batched Retrieval ---
-            batch_size = 1000
-            all_docs: List[Document] = []
+                self.logger.warning(f"Vector store for collection '{collection_name}' not found.")
+                return
+            
+            collection = vectorstore._collection
             offset = 0
-            collection = vectorstore._collection  # Access the underlying Chroma collection
-
-            self.logger.info(f"Starting full document retrieval for collection '{collection_name}'...")
-
+            
+            self.logger.info(f"Starting document stream for collection '{collection_name}'...")
+            
             while True:
                 try:
-                    # Fetch a batch of documents
+                    # Fetch batch
                     results = collection.get(limit=batch_size, offset=offset)
-
-                    # Break if no more documents are returned
+                    
                     if not results.get('documents'):
-                        break
-
-                    # Process the batch: Convert raw data to Document objects
-                    # Safely handle potential None values for metadatas
+                        break  # No more documents
+                    
+                    # Process batch
                     contents = results.get('documents', [])
                     metadatas = results.get('metadatas') or [None] * len(contents)
                     
+                    batch_docs = []
                     for content, metadata in zip(contents, metadatas):
-                        # Ensure content is a string and metadata is a dict
                         if isinstance(content, str):
                             doc_metadata = metadata if isinstance(metadata, dict) else {}
                             doc = Document(page_content=content, metadata=doc_metadata)
-                            all_docs.append(doc)
-                        else:
-                            self.logger.warning(f"Skipping non-string document content in batch at offset {offset}.")
-
+                            batch_docs.append(doc)
+                    
+                    if batch_docs:
+                        yield batch_docs
+                    
                     # Check if this was the last batch
                     if len(contents) < batch_size:
                         break
-
-                    # Move to the next batch
+                    
                     offset += batch_size
-
-                    # Periodic memory cleanup for very large collections
-                    if offset % 5000 == 0:
-                        self.logger.debug(f"Retrieved {offset} documents so far for '{collection_name}'. Triggering gc.collect().")
-                        import gc
-                        gc.collect()
-
+                    
                 except Exception as batch_error:
-                    self.logger.error(f"Error processing batch at offset {offset} for collection '{collection_name}': {batch_error}", exc_info=True)
-                    raise
-
-            self.logger.info(f"Finished retrieving {len(all_docs)} documents from '{collection_name}'.")
-
-            # --- Update Cache ---
-            self.document_cache[cache_key] = all_docs
-            self.cache_timestamps[cache_key] = current_time
-
-            # --- Cache Maintenance ---
-            # Remove stale entries that are significantly past their TTL
-            try:
-                expired_keys = [
-                    key for key, timestamp in self.cache_timestamps.items()
-                    if current_time - timestamp > self.cache_ttl * 2
-                ]
-                for key in expired_keys:
-                    # Use pop with default to avoid KeyError if key was already removed
-                    self.document_cache.pop(key, None)
-                    self.cache_timestamps.pop(key, None)
-                if expired_keys:
-                    self.logger.debug(f"Cache maintenance: Removed {len(expired_keys)} stale entries.")
-            except Exception as cache_maintenance_error:
-                # Log cache maintenance errors but don't let them break the main functionality
-                self.logger.warning(f"Error during cache maintenance: {cache_maintenance_error}")
-
-            return all_docs
-
+                    self.logger.error(
+                        f"Error streaming batch at offset {offset} for '{collection_name}': {batch_error}",
+                        exc_info=True
+                    )
+                    break
+            
+            self.logger.info(f"Finished streaming documents from '{collection_name}'.")
+            
         except Exception as e:
-            self.logger.error(f"Failed to retrieve documents from collection '{collection_name}': {e}", exc_info=True)
-            # Return an empty list to indicate failure without breaking the caller
+            self.logger.error(f"Error initializing stream for '{collection_name}': {e}", exc_info=True)
+
+
+    def _get_all_documents_from_collection(
+        self,
+        collection_name: str,
+        use_cache: bool = True,
+        max_documents: Optional[int] = None
+    ) -> List[Document]:
+        """
+        Retrieve documents from a collection with caching and memory optimization.
+        
+        Args:
+            collection_name: Collection to retrieve from
+            use_cache: Whether to use cache (default True)
+            max_documents: Maximum documents to return (None = all)
+            
+        Returns:
+            List of Document objects
+        """
+        import time
+        
+        # Cache check
+        if use_cache:
+            cache_key = collection_name
+            current_time = time.time()
+            
+            if cache_key in self.document_cache:
+                cache_age = current_time - self.cache_timestamps.get(cache_key, 0)
+                if cache_age < self.cache_ttl:
+                    cached_docs = self.document_cache[cache_key]
+                    
+                    # Apply max_documents limit if specified
+                    if max_documents is not None:
+                        cached_docs = cached_docs[:max_documents]
+                    
+                    self.logger.debug(
+                        f"Cache HIT: Using cached documents for '{collection_name}' "
+                        f"(Age: {cache_age:.1f}s, Docs: {len(cached_docs)})"
+                    )
+                    return cached_docs
+        
+        # Cache miss - fetch from vector store
+        try:
+            vectorstore = self.vectorstores.get(collection_name)
+            if not vectorstore:
+                self.logger.warning(f"Vector store for collection '{collection_name}' not found.")
+                return []
+            
+            # Check collection size first
+            collection = vectorstore._collection
+            
+            try:
+                # Get count (if available)
+                count_result = collection.count()
+                doc_count = count_result if isinstance(count_result, int) else None
+                
+                if doc_count is not None:
+                    self.logger.info(
+                        f"Collection '{collection_name}' contains {doc_count} documents"
+                    )
+                    
+                    # Warn if very large
+                    if doc_count > 10000:
+                        self.logger.warning(
+                            f"Large collection detected ({doc_count} docs). "
+                            f"Consider using _stream_documents_from_collection() for memory efficiency."
+                        )
+            except Exception as count_error:
+                self.logger.debug(f"Could not get document count: {count_error}")
+                doc_count = None
+            
+            # Fetch documents using streaming (memory-efficient)
+            all_docs: List[Document] = []
+            
+            for batch in self._stream_documents_from_collection(collection_name, batch_size=1000):
+                all_docs.extend(batch)
+                
+                # Stop if max_documents reached
+                if max_documents is not None and len(all_docs) >= max_documents:
+                    all_docs = all_docs[:max_documents]
+                    self.logger.info(
+                        f"Reached max_documents limit ({max_documents}), stopping retrieval"
+                    )
+                    break
+                
+                # Periodic progress logging for large collections
+                if len(all_docs) % 5000 == 0:
+                    self.logger.debug(f"Retrieved {len(all_docs)} documents so far...")
+            
+            self.logger.info(f"Retrieved {len(all_docs)} documents from '{collection_name}'.")
+            
+            # Update cache if using it
+            if use_cache:
+                self.document_cache[collection_name] = all_docs
+                self.cache_timestamps[collection_name] = time.time()
+                
+                # Cache maintenance
+                self._maintain_cache()
+            
+            return all_docs
+            
+        except Exception as e:
+            self.logger.error(
+                f"Failed to retrieve documents from '{collection_name}': {e}",
+                exc_info=True
+            )
             return []
 
 
+    def _maintain_cache(self, max_cache_size_mb: float = 500.0) -> None:
+        """
+        Maintain cache by removing old entries if memory usage is too high.
+        
+        Args:
+            max_cache_size_mb: Maximum cache size in megabytes
+        """
+        try:
+            import time
+            import sys
+            
+            # Estimate current cache size
+            total_size_bytes = 0
+            for docs in self.document_cache.values():
+                total_size_bytes += sys.getsizeof(docs)
+                for doc in docs:
+                    total_size_bytes += sys.getsizeof(doc.page_content)
+            
+            current_size_mb = total_size_bytes / (1024 * 1024)
+            
+            if current_size_mb > max_cache_size_mb:
+                self.logger.warning(
+                    f"Cache size ({current_size_mb:.1f} MB) exceeds limit ({max_cache_size_mb} MB). "
+                    f"Removing oldest entries..."
+                )
+                
+                # Sort by timestamp (oldest first)
+                sorted_items = sorted(
+                    self.cache_timestamps.items(),
+                    key=lambda x: x[1]
+                )
+                
+                # Remove oldest until under limit
+                for collection_name, timestamp in sorted_items:
+                    if current_size_mb <= max_cache_size_mb * 0.9:  # Target 90% of limit
+                        break
+                    
+                    removed_docs = self.document_cache.pop(collection_name, None)
+                    self.cache_timestamps.pop(collection_name, None)
+                    
+                    if removed_docs:
+                        removed_size = sys.getsizeof(removed_docs) / (1024 * 1024)
+                        current_size_mb -= removed_size
+                        self.logger.info(
+                            f"Evicted '{collection_name}' from cache ({len(removed_docs)} docs, "
+                            f"~{removed_size:.1f} MB freed)"
+                        )
+                
+                # Trigger garbage collection
+                import gc
+                collected = gc.collect()
+                self.logger.debug(f"Garbage collected {collected} objects after cache eviction")
+                
+        except Exception as e:
+            self.logger.warning(f"Error during cache maintenance: {e}", exc_info=True)
+        
     def clear_document_cache(self, collection_name: Optional[str] = None) -> None:
         """
         Clear document cache to free memory.
@@ -616,62 +730,95 @@ class CoreRAGEngine:
 
     def _setup_retriever_for_collection(self, collection_name: str) -> None:
         """
-        Set up the appropriate retriever (hybrid or standard) for a collection.
-
-        This method configures the retriever used for document retrieval for a given
-        collection. If hybrid search is enabled, it attempts to create a hybrid
-        retriever. Otherwise, it falls back to a standard Chroma retriever.
-
-        Args:
-            collection_name (str): The name of the collection to set up the retriever for.
+        Set up retriever with memory-efficient document loading for hybrid search.
         """
         try:
             vectorstore = self.vectorstores.get(collection_name)
             if not vectorstore:
-                error_msg = f"Cannot set up retriever: Vectorstore for '{collection_name}' not found in memory."
+                error_msg = f"Cannot set up retriever: Vectorstore for '{collection_name}' not found."
                 self.logger.error(error_msg)
                 raise ValueError(error_msg)
 
             if self.enable_hybrid_search:
-                self.logger.debug(f"Setting up hybrid retriever for collection '{collection_name}'...")
+                self.logger.debug(f"Setting up hybrid retriever for '{collection_name}'...")
                 try:
-                    # Hybrid retrievers often need all documents for BM25 part
-                    all_docs = self._get_all_documents_from_collection(collection_name)
+                    # ✨ NEW: Check collection size first
+                    collection = vectorstore._collection
+                    try:
+                        doc_count = collection.count()
+                    except:
+                        doc_count = None
+                    
+                    # Use streaming for large collections
+                    if doc_count and doc_count > 10000:
+                        self.logger.warning(
+                            f"Large collection ({doc_count} docs) - hybrid search may be slow. "
+                            f"Loading in batches..."
+                        )
+                        
+                        # Stream documents in batches
+                        all_docs = []
+                        for batch in self._stream_documents_from_collection(
+                            collection_name,
+                            batch_size=1000
+                        ):
+                            all_docs.extend(batch)
+                            
+                            # Limit for hybrid search (BM25 performance degrades with huge corpus)
+                            if len(all_docs) >= 50000:
+                                self.logger.warning(
+                                    f"Limiting hybrid search to 50,000 docs (collection has {doc_count})"
+                                )
+                                break
+                    else:
+                        # Small collection - load normally
+                        all_docs = self._get_all_documents_from_collection(
+                            collection_name,
+                            use_cache=True
+                        )
 
                     if all_docs:
-                        # Create the hybrid retriever with the required documents and k
-                        hybrid_retriever = AdaptiveHybridRetriever(vector_store=vectorstore,
-                                                                   documents=all_docs,
-                                                                   k=self.default_retrieval_top_k)
-
-                        self.retrievers[collection_name] = hybrid_retriever
-                        self.logger.info(f"Successfully created hybrid retriever for collection '{collection_name}' with k={self.default_retrieval_top_k}")
-                    else:
-                        # Fallback: If no docs are found (e.g., empty collection), use standard retriever
-                        self.logger.warning(
-                            f"Could not create hybrid retriever for '{collection_name}' (no documents found), "
-                            f"falling back to standard retriever with k={self.default_retrieval_top_k}"
+                        hybrid_retriever = AdaptiveHybridRetriever(
+                            vector_store=vectorstore,
+                            documents=all_docs,
+                            k=self.default_retrieval_top_k
                         )
-                        standard_retriever = vectorstore.as_retriever(search_kwargs={'k': self.default_retrieval_top_k})
+                        self.retrievers[collection_name] = hybrid_retriever
+                        self.logger.info(
+                            f"Hybrid retriever created for '{collection_name}' with "
+                            f"{len(all_docs)} docs, k={self.default_retrieval_top_k}"
+                        )
+                    else:
+                        # Fallback
+                        self.logger.warning(
+                            f"No documents for hybrid retriever '{collection_name}', using standard"
+                        )
+                        standard_retriever = vectorstore.as_retriever(
+                            search_kwargs={'k': self.default_retrieval_top_k}
+                        )
                         self.retrievers[collection_name] = standard_retriever
-
+                        
                 except Exception as hybrid_error:
                     self.logger.warning(
                         f"Failed to create hybrid retriever for '{collection_name}': {hybrid_error}. "
-                        f"Falling back to standard retriever with k={self.default_retrieval_top_k}",
+                        f"Falling back to standard retriever",
                         exc_info=True
                     )
                     
-                    # Fallback to standard retriever if hybrid creation fails
-                    standard_retriever = vectorstore.as_retriever(search_kwargs={'k': self.default_retrieval_top_k})
+                    # Fallback
+                    standard_retriever = vectorstore.as_retriever(
+                        search_kwargs={'k': self.default_retrieval_top_k}
+                    )
                     self.retrievers[collection_name] = standard_retriever
 
-            # --- Standard Retriever Setup ---
             else:
-                self.logger.debug(f"Setting up standard retriever for collection '{collection_name}'...")
-                standard_retriever = vectorstore.as_retriever(search_kwargs={'k': self.default_retrieval_top_k})
+                # Standard retriever (no memory issues)
+                self.logger.debug(f"Setting up standard retriever for '{collection_name}'...")
+                standard_retriever = vectorstore.as_retriever(
+                    search_kwargs={'k': self.default_retrieval_top_k}
+                )
                 self.retrievers[collection_name] = standard_retriever
-                self.logger.debug(f"Standard retriever set up for '{collection_name}' with k={self.default_retrieval_top_k}")
+                self.logger.debug(f"Standard retriever set up for '{collection_name}'.")
 
         except Exception as e:
             error_msg = f"Unexpected error in _setup_retriever_for_collection for '{collection_name}': {e}"
@@ -2319,7 +2466,6 @@ class CoreRAGEngine:
         try:
             generated_text = self.answer_generation_chain.invoke(input_data_for_chain)
             state["generation"] = generated_text.strip()
-            self._clear_error(state)
         except Exception as e:
             self.logger.error(f"Generation error: {e}", exc_info=True)
             state["generation"] = "Error generating answer."
