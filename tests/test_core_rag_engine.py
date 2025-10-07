@@ -503,3 +503,71 @@ def test_no_error_summary(rag_engine):
     
     summary = rag_engine.get_error_summary(state)
     assert summary is None
+    
+    
+def test_stream_documents(rag_engine):
+    """Test document streaming for large collections."""
+    from langchain_core.embeddings.fake import FakeEmbeddings
+    rag_engine.embedding_model = FakeEmbeddings(size=1536)
+    
+    cname = "stream_test"
+    
+    # Create large collection
+    docs = [Document(page_content=f"Doc {i}") for i in range(5000)]
+    rag_engine.ingest(direct_documents=docs, collection_name=cname, recreate_collection=True)
+    
+    # Stream documents
+    batch_count = 0
+    total_docs = 0
+    
+    for batch in rag_engine._stream_documents_from_collection(cname, batch_size=1000):
+        batch_count += 1
+        total_docs += len(batch)
+        assert len(batch) <= 1000  # Batch size respected
+    
+    assert batch_count == 5  # 5000 docs / 1000 per batch
+    assert total_docs == 5000
+
+
+def test_get_documents_with_limit(rag_engine):
+    """Test max_documents parameter."""
+    from langchain_core.embeddings.fake import FakeEmbeddings
+    rag_engine.embedding_model = FakeEmbeddings(size=1536)
+    
+    cname = "limit_test"
+    
+    # Create collection with 100 docs
+    docs = [Document(page_content=f"Doc {i}") for i in range(100)]
+    rag_engine.ingest(direct_documents=docs, collection_name=cname, recreate_collection=True)
+    
+    # Get only 10 docs
+    limited_docs = rag_engine._get_all_documents_from_collection(
+        cname,
+        use_cache=False,
+        max_documents=10
+    )
+    
+    assert len(limited_docs) == 10
+
+
+def test_cache_maintenance(rag_engine):
+    """Test cache eviction when size limit exceeded."""
+    from langchain_core.embeddings.fake import FakeEmbeddings
+    rag_engine.embedding_model = FakeEmbeddings(size=1536)
+    
+    # Create multiple collections
+    for i in range(5):
+        docs = [Document(page_content="X" * 10000) for _ in range(100)]  # Large docs
+        rag_engine.ingest(
+            direct_documents=docs,
+            collection_name=f"big_{i}",
+            recreate_collection=True
+        )
+        # Populate cache
+        rag_engine._get_all_documents_from_collection(f"big_{i}")
+    
+    # Trigger maintenance with low limit
+    rag_engine._maintain_cache(max_cache_size_mb=1.0)
+    
+    # Should have evicted some collections
+    assert len(rag_engine.document_cache) < 5
