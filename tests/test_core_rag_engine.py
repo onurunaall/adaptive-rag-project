@@ -9,12 +9,14 @@ from langchain.schema import Document
 
 from src.core_rag_engine import CoreRAGEngine, GroundingCheck, RerankScore, QueryAnalysis, RelevanceGrade
 
+
 @pytest.fixture
 def mock_embedding():
     """Fixture using LangChain's FakeEmbeddings for testing."""
     from langchain_core.embeddings.fake import FakeEmbeddings
     return FakeEmbeddings(size=1536)
-    
+
+
 @pytest.fixture(scope="module")
 def populated_rag_engine(rag_engine):
     """
@@ -32,6 +34,7 @@ def populated_rag_engine(rag_engine):
     
     rag_engine.ingest(direct_documents=docs, collection_name=cname, recreate_collection=True)
     return rag_engine, cname
+
 
 @pytest.fixture(scope="module")
 def rag_engine():
@@ -55,6 +58,7 @@ def rag_engine():
     # Remove the test directory after all tests in this module run
     shutil.rmtree(test_dir)
     
+
 def test_ingest_direct_documents(rag_engine):
     """Tests that ingesting documents creates a queryable vector store."""
     from langchain_core.embeddings.fake import FakeEmbeddings
@@ -113,6 +117,7 @@ def test_rag_direct_answer(populated_rag_engine, mocker):
     res = engine.run_full_rag_workflow("What is the capital of France?", collection_name=collection)
     assert "Paris" in res["answer"]
 
+
 def test_rag_web_search_fallback(rag_engine, mocker):
     """
     Tests that the web search node correctly calls the search tool.
@@ -159,6 +164,7 @@ def test_rag_web_search_fallback(rag_engine, mocker):
     assert len(result_state["documents"]) > 0
     assert "AlphaFold3" in result_state["context"]
     
+
 def test_grounding_check_node_on_failure(rag_engine, mocker):
     mock_failure_output = GroundingCheck(
         is_grounded=False,
@@ -192,6 +198,7 @@ def test_grounding_check_node_on_failure(rag_engine, mocker):
     assert result_state["regeneration_feedback"] is not None
     assert "The following statements were ungrounded" in result_state["regeneration_feedback"]
     assert result_state["grounding_check_attempts"] == 1
+
 
 def test_grounding_check_node_on_success(rag_engine, mocker):
     mock_success_output = GroundingCheck(is_grounded=True)
@@ -250,6 +257,7 @@ def test_route_after_grounding_check(rag_engine):
     rag_engine.max_grounding_attempts = 2
     assert rag_engine._route_after_grounding_check(state_max_attempts) == END
 
+
 def test_grade_documents_node_handles_parsing_error(rag_engine, mocker):
     mock_chain = Mock()
     mock_chain.invoke.side_effect = Exception("LLM or parsing failed")
@@ -264,6 +272,7 @@ def test_grade_documents_node_handles_parsing_error(rag_engine, mocker):
     assert result["relevance_check_passed"] is False
     assert len(result["documents"]) == 0
     
+
 def test_rerank_documents_node_sorts_correctly(rag_engine, mocker):
     docs = [Document(page_content="Low"), Document(page_content="High")]
     mock_scores = [
@@ -295,6 +304,7 @@ def test_document_relevance_grader_chain_parsing(rag_engine, mocker):
 
     assert result["relevance_check_passed"] is True
     
+
 def test_document_relevance_grader_chain_bad_json(rag_engine, mocker):
     mock_chain = Mock()
     mock_chain.invoke.side_effect = json.JSONDecodeError("Expecting value", "NOT JSON", 0)
@@ -321,6 +331,7 @@ def test_query_rewriter_chain_parsing(rag_engine, mocker):
     # In the source, the rewriter output is now just the string, not a dict
     assert result["question"] == "Rewritten: What is LangGraph?"
 
+
 def test_ingest_handles_oserror(monkeypatch, rag_engine, mocker, mock_embedding):
     """Simulates a PermissionError and ensures the error is logged."""
     spy_logger = mocker.spy(rag_engine.logger, 'error')
@@ -332,3 +343,102 @@ def test_ingest_handles_oserror(monkeypatch, rag_engine, mocker, mock_embedding)
         recreate_collection=True
     )
     spy_logger.assert_called_once()
+
+
+def test_cache_invalidation_on_ingest(rag_engine):
+    """Test that cache is invalidated when new documents are ingested."""
+    from langchain_core.embeddings.fake import FakeEmbeddings
+    rag_engine.embedding_model = FakeEmbeddings(size=1536)
+    
+    cname = "cache_test"
+    
+    # First ingestion
+    docs1 = [Document(page_content="Initial document")]
+    rag_engine.ingest(direct_documents=docs1, collection_name=cname, recreate_collection=True)
+    
+    # Populate cache
+    cached_docs1 = rag_engine._get_all_documents_from_collection(cname)
+    assert len(cached_docs1) == 1
+    assert "Initial document" in cached_docs1[0].page_content
+    
+    # Second ingestion (should invalidate cache)
+    docs2 = [Document(page_content="Updated document")]
+    rag_engine.ingest(direct_documents=docs2, collection_name=cname, recreate_collection=False)
+    
+    # Verify cache was invalidated and shows new docs
+    cached_docs2 = rag_engine._get_all_documents_from_collection(cname)
+    assert len(cached_docs2) == 2  # Both documents now
+    contents = [doc.page_content for doc in cached_docs2]
+    assert "Initial document" in contents
+    assert "Updated document" in contents
+
+
+def test_cache_invalidation_on_recreate(rag_engine):
+    """Test that cache is invalidated when collection is recreated."""
+    from langchain_core.embeddings.fake import FakeEmbeddings
+    rag_engine.embedding_model = FakeEmbeddings(size=1536)
+    
+    cname = "recreate_cache_test"
+    
+    # First ingestion
+    docs1 = [Document(page_content="First version")]
+    rag_engine.ingest(direct_documents=docs1, collection_name=cname, recreate_collection=True)
+    
+    # Populate cache
+    cached_docs1 = rag_engine._get_all_documents_from_collection(cname)
+    assert len(cached_docs1) == 1
+    
+    # Recreate collection
+    docs2 = [Document(page_content="Second version")]
+    rag_engine.ingest(direct_documents=docs2, collection_name=cname, recreate_collection=True)
+    
+    # Verify cache shows only new docs
+    cached_docs2 = rag_engine._get_all_documents_from_collection(cname)
+    assert len(cached_docs2) == 1
+    assert "Second version" in cached_docs2[0].page_content
+    assert "First version" not in cached_docs2[0].page_content
+
+
+def test_cache_stats(rag_engine):
+    """Test cache statistics reporting."""
+    from langchain_core.embeddings.fake import FakeEmbeddings
+    rag_engine.embedding_model = FakeEmbeddings(size=1536)
+    
+    # Ingest some docs
+    docs = [Document(page_content="Test doc " + str(i)) for i in range(5)]
+    rag_engine.ingest(direct_documents=docs, collection_name="stats_test", recreate_collection=True)
+    
+    # Populate cache
+    rag_engine._get_all_documents_from_collection("stats_test")
+    
+    # Get stats
+    stats = rag_engine.get_cache_stats()
+    
+    assert stats["cached_collections"] >= 1
+    assert "stats_test" in stats["collection_names"]
+    assert stats["total_documents"] >= 5
+    assert stats["estimated_memory_mb"] > 0
+
+
+def test_invalidate_all_caches(rag_engine):
+    """Test invalidating all caches at once."""
+    from langchain_core.embeddings.fake import FakeEmbeddings
+    rag_engine.embedding_model = FakeEmbeddings(size=1536)
+    
+    # Create multiple collections
+    for i in range(3):
+        docs = [Document(page_content=f"Doc {i}")]
+        rag_engine.ingest(direct_documents=docs, collection_name=f"test_{i}", recreate_collection=True)
+        rag_engine._get_all_documents_from_collection(f"test_{i}")
+    
+    # Verify caches exist
+    stats_before = rag_engine.get_cache_stats()
+    assert stats_before["cached_collections"] >= 3
+    
+    # Invalidate all
+    rag_engine.invalidate_all_caches()
+    
+    # Verify caches cleared
+    stats_after = rag_engine.get_cache_stats()
+    assert stats_after["cached_collections"] == 0
+    assert stats_after["total_documents"] == 0
