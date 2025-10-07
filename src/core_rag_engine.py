@@ -554,53 +554,6 @@ class CoreRAGEngine:
             self.logger.error(error_msg, exc_info=True)
 
 
-    def _handle_recreate_collection(self, collection_name: str, persist_dir: str) -> None:
-        """
-        Handle recreation of a collection by removing existing data.
-
-        This method is responsible for the clean slate preparation when a collection
-        needs to be recreated. It removes any persisted data on disk and clears
-        references to the collection from the engine's in-memory stores.
-
-        Args:
-            collection_name (str): The name of the collection to recreate.
-            persist_dir (str): The full path to the collection's persistence directory.
-        """
-        try:
-            self.logger.info(f"Recreating collection '{collection_name}'. Removing existing data if present.")
-
-            # If a persistence directory exists for this collection, remove it entirely.
-            if os.path.exists(persist_dir):
-                try:
-                    shutil.rmtree(persist_dir)
-                    self.logger.debug(f"Removed persisted data directory: {persist_dir}")
-                except OSError as os_error:
-                    self.logger.error(f"OS error removing persisted directory '{persist_dir}': {os_error}")
-                    raise RuntimeError(f"Failed to remove persisted directory '{persist_dir}'") from os_error
-                except Exception as remove_error:
-                    self.logger.critical(f"Unexpected error removing persisted directory '{persist_dir}': {remove_error}", exc_info=True)
-                    raise RuntimeError(f"Failed to remove persisted directory '{persist_dir}'") from remove_error
-
-            # Remove the vectorstore object reference if it exists in memory.
-            if collection_name in self.vectorstores:
-                removed_vs = self.vectorstores.pop(collection_name, None)
-                if removed_vs:
-                    self.logger.debug(f"Removed in-memory vectorstore reference for '{collection_name}'.")
-
-            # Remove the retriever object reference if it exists in memory.
-            if collection_name in self.retrievers:
-                removed_retriever = self.retrievers.pop(collection_name, None)
-                if removed_retriever:
-                    self.logger.debug(f"Removed in-memory retriever reference for '{collection_name}'.")
-
-            self.logger.info(f"Completed recreation preparation for collection '{collection_name}'.")
-
-        except Exception as e:
-            error_msg = f"Unexpected error in _handle_recreate_collection for '{collection_name}': {e}"
-            self.logger.critical(error_msg, exc_info=True)
-            raise RuntimeError(error_msg) from e
-
-
     def _handle_load_from_disk(self, collection_name: str, persist_dir: str) -> None:
         """
         Handle loading a collection from disk if it exists.
@@ -2501,7 +2454,54 @@ class CoreRAGEngine:
         
         return chunks
         
+    def _invalidate_collection_cache(self, collection_name: str) -> None:
+        """
+        Invalidate the document cache for a specific collection.
+        
+        This should be called whenever the collection is modified
+        (documents added, removed, or collection recreated).
+        
+        Args:
+            collection_name: Name of the collection whose cache to invalidate
+        """
+        try:
+            cache_key = collection_name
+            
+            if cache_key in self.document_cache:
+                # Remove from cache
+                removed_docs = self.document_cache.pop(cache_key, None)
+                removed_timestamp = self.cache_timestamps.pop(cache_key, None)
+                
+                doc_count = len(removed_docs) if removed_docs else 0
+                self.logger.debug(
+                    f"Invalidated cache for collection '{collection_name}' "
+                    f"({doc_count} documents removed from cache)"
+                )
+            else:
+                self.logger.debug(
+                    f"No cache entry found for collection '{collection_name}' "
+                    f"(nothing to invalidate)"
+                )
+            
+            # Optional: trigger garbage collection if cache was large
+            if cache_key in locals() and removed_docs and len(removed_docs) > 1000:
+                try:
+                    import gc
+                    collected = gc.collect()
+                    self.logger.debug(f"Garbage collected {collected} objects after cache invalidation")
+                except Exception as gc_error:
+                    self.logger.debug(f"GC after invalidation failed: {gc_error}")
+                    
+        except Exception as e:
+            # Cache invalidation failure shouldn't break the system
+            error_msg = f"Error invalidating cache for '{collection_name}': {e}"
+            self.logger.warning(error_msg, exc_info=True)
+
+
     def index_documents(self, docs: List[Document], name: str, recreate: bool = False) -> None:
+        """
+        Index documents into a collection.
+        """
         self._init_or_load_vectorstore(name, recreate)
         vs = self.vectorstores.get(name)
         d = self._get_persist_dir(name)
@@ -2510,13 +2510,7 @@ class CoreRAGEngine:
             try:
                 os.makedirs(d, exist_ok=True)
             except Exception as e:
-                # The unit-test monkey-patches os.makedirs to raise
-                # PermissionError, then spies on self.logger.error. We must
-                # log exactly once and abort indexing.
-                self.logger.error(
-                    f"Could not create persist directory '{d}': {e}",
-                    exc_info=True,
-                )
+                self.logger.error(f"Could not create persist directory '{d}': {e}", exc_info=True)
                 return
 
             vs_new = Chroma.from_documents(
@@ -2530,9 +2524,58 @@ class CoreRAGEngine:
                 search_kwargs={'k': self.default_retrieval_top_k}
             )
             self.logger.info(f"Created vector store '{name}' with default k={self.default_retrieval_top_k}")
+            
+            # Invalidate cache after recreation
+            self._invalidate_collection_cache(name)
+            
         else:
             vs.add_documents(docs)
             self.logger.info(f"Added {len(docs)} docs to '{name}'")
+            
+            # Invalidate cache after adding documents
+            self._invalidate_collection_cache(name)
+
+
+    def _handle_recreate_collection(self, collection_name: str, persist_dir: str) -> None:
+        """
+        Handle recreation of a collection by removing existing data.
+        """
+        try:
+            self.logger.info(f"Recreating collection '{collection_name}'. Removing existing data if present.")
+
+            # If a persistence directory exists for this collection, remove it entirely.
+            if os.path.exists(persist_dir):
+                try:
+                    shutil.rmtree(persist_dir)
+                    self.logger.debug(f"Removed persisted data directory: {persist_dir}")
+                except OSError as os_error:
+                    self.logger.error(f"OS error removing persisted directory '{persist_dir}': {os_error}")
+                    raise RuntimeError(f"Failed to remove persisted directory '{persist_dir}'") from os_error
+                except Exception as remove_error:
+                    self.logger.critical(f"Unexpected error removing persisted directory '{persist_dir}': {remove_error}", exc_info=True)
+                    raise RuntimeError(f"Failed to remove persisted directory '{persist_dir}'") from remove_error
+
+            # Remove the vectorstore object reference if it exists in memory.
+            if collection_name in self.vectorstores:
+                removed_vs = self.vectorstores.pop(collection_name, None)
+                if removed_vs:
+                    self.logger.debug(f"Removed in-memory vectorstore reference for '{collection_name}'.")
+
+            # Remove the retriever object reference if it exists in memory.
+            if collection_name in self.retrievers:
+                removed_retriever = self.retrievers.pop(collection_name, None)
+                if removed_retriever:
+                    self.logger.debug(f"Removed in-memory retriever reference for '{collection_name}'.")
+
+            # ✨ Invalidate cache when recreating collection
+            self._invalidate_collection_cache(collection_name)
+
+            self.logger.info(f"Completed recreation preparation for collection '{collection_name}'.")
+
+        except Exception as e:
+            error_msg = f"Unexpected error in _handle_recreate_collection for '{collection_name}': {e}"
+            self.logger.critical(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
 
 
     def ingest(
@@ -2540,8 +2583,7 @@ class CoreRAGEngine:
         sources: Union[Dict[str, Any], List[Dict[str, Any]], None] = None,
         collection_name: Optional[str] = None,
         recreate_collection: bool = False,
-        direct_documents: Optional[List[Document]] = None
-    ) -> None:
+        direct_documents: Optional[List[Document]] = None) -> None:
         """
         Ingest documents into a specified collection.
 
@@ -2648,40 +2690,146 @@ class CoreRAGEngine:
                 )
             except Exception as index_error:
                 error_msg = f"Failed to index documents into collection '{name}': {index_error}"
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """
+        Get statistics about the document cache.
+        
+        Returns:
+            Dictionary with cache statistics
+        """
+        try:
+            import sys
+            
+            total_docs = sum(len(docs) for docs in self.document_cache.values())
+            
+            # Estimate memory usage
+            total_memory_bytes = sum(
+                sys.getsizeof(docs) for docs in self.document_cache.values()
+            )
+            
+            # Add memory for document content
+            for docs in self.document_cache.values():
+                for doc in docs:
+                    total_memory_bytes += sys.getsizeof(doc.page_content)
+            
+            return {
+                "cached_collections": len(self.document_cache),
+                "collection_names": list(self.document_cache.keys()),
+                "total_documents": total_docs,
+                "estimated_memory_mb": total_memory_bytes / (1024 * 1024),
+                "cache_timestamps": {
+                    name: timestamp 
+                    for name, timestamp in self.cache_timestamps.items()
+                }
+            }
+        except Exception as e:
+            self.logger.error(f"Error getting cache stats: {e}", exc_info=True)
+            return {"error": str(e)}
+
+
+    def invalidate_all_caches(self) -> None:
+        """
+        Invalidate all document caches across all collections.
+        
+        Useful for:
+        - Freeing memory
+        - Forcing fresh reads
+        - Troubleshooting
+        """
+        try:
+            cache_count = len(self.document_cache)
+            doc_count = sum(len(docs) for docs in self.document_cache.values())
+            
+            self.clear_document_cache(collection_name=None)
+            
+            self.logger.info(
+                f"Invalidated all caches: {cache_count} collections, "
+                f"{doc_count} documents removed"
+            )
+        except Exception as e:
+            error_msg = f"Error invalidating all caches: {e}"
+            self.logger.error(error_msg, exc_info=True)
+
+
+    def set_cache_ttl(self, ttl_seconds: int) -> None:
+        """
+        Update the Time-To-Live for cached documents.
+        
+        Args:
+            ttl_seconds: New TTL in seconds (e.g., 300 = 5 minutes)
+        """
+        if ttl_seconds < 0:
+            self.logger.warning(f"Invalid TTL {ttl_seconds}, must be >= 0")
+            return
+        
+        old_ttl = self.cache_ttl
+        self.cache_ttl = ttl_seconds
+        
+        self.logger.info(f"Cache TTL updated: {old_ttl}s → {ttl_seconds}s")
         
     def answer_query(
         self,
         question: str,
         collection_name: Optional[str] = None,
-        top_k: int = 4) -> Dict[str, Any]:
-        name = collection_name or self.default_collection_name
-        self._init_or_load_vectorstore(name, recreate=False)
-        retriever = self.retrievers.get(name)
-        if not retriever:
-            msg = "No documents indexed."
-            self.logger.warning(msg)
-            return {"answer": msg, "sources": []}
-        docs = retriever.get_relevant_documents(question)[:top_k]
-        context = "\n\n".join(d.page_content for d in docs)
-        prompt = PROMPT_TEMPLATE.format(context=context, question=question)
-        try:
-            ans = self.llm.invoke(prompt).content
-        except Exception as e:
-            self.logger.error(f"LLM error: {e}")
-            return {"answer": "Error generating answer.", "sources": []}
-        sources = [
-            {"source": d.metadata.get("source", "unknown"),
-            "preview": d.page_content[:200] + "..."}
-            for d in docs
-        ]
-        return {"answer": ans.strip(), "sources": sources}
+        top_k: int = 4
+    ) -> Dict[str, Any]:
+        """
+        Answer a user's question using documents from the specified (or default) collection.
+        """
+        # Determine the collection to use
+        collection = collection_name or self.default_collection_name
 
-    async def run_full_rag_workflow(self,
-                                    question: str,
-                                    collection_name: Optional[str] = None,
-                                    chat_history: Optional[List[BaseMessage]] = None) -> Dict[str, Any]:
-        
-        name = collection_name or self.default_collection_name
+        # Ensure the vector store for this collection is initialized
+        self._init_or_load_vectorstore(collection, recreate=False)
+
+        # Retrieve the document retriever for this collection
+        retriever = self.retrievers.get(collection)
+        if not retriever:
+            message = "No documents indexed."
+            self.logger.warning(message)
+            return {"answer": message, "sources": []}
+
+        # Fetch the most relevant documents
+        relevant_docs = retriever.get_relevant_documents(question)[:top_k]
+
+        # Build the context from retrieved documents
+        context = "\n\n".join(doc.page_content for doc in relevant_docs)
+
+        # Format the prompt with context and question
+        prompt = PROMPT_TEMPLATE.format(context=context, question=question)
+
+        # Generate an answer using the LLM
+        try:
+            response = self.llm.invoke(prompt)
+            answer = response.content.strip()
+        except Exception as error:
+            self.logger.error(f"LLM error: {error}")
+            return {"answer": "Error generating answer.", "sources": []}
+
+        # Prepare source metadata for the response
+        sources = [
+            {
+                "source": doc.metadata.get("source", "unknown"),
+                "preview": doc.page_content[:200] + "..."
+            }
+            for doc in relevant_docs
+        ]
+
+        return {"answer": answer, "sources": sources}
+
+    async def run_full_rag_workflow(
+        self,
+        question: str,
+        collection_name: Optional[str] = None,
+        chat_history: Optional[List[BaseMessage]] = None) -> Dict[str, Any]:
+        """
+        Execute the full RAG workflow asynchronously using the specified collection.
+        """
+        # Resolve collection name
+        collection = collection_name or self.default_collection_name
+
+        # Initialize the workflow state
         initial_state: CoreGraphState = {
             "question": question,
             "original_question": question,
@@ -2696,38 +2844,65 @@ class CoreRAGEngine:
             "error_message": None,
             "grounding_check_attempts": 0,
             "regeneration_feedback": None,
-            "collection_name": name,
-            "chat_history": chat_history or []
+            "collection_name": collection,
+            "chat_history": chat_history or [],
         }
-        final = await self.rag_workflow.ainvoke(initial_state)
 
-        answer = final.get("generation", "")
-        docs = final.get("documents", [])
-        sources = [{"source": d.metadata.get("source", "unknown"), "preview": d.page_content[:200] + "..."} for d in docs]
+        # Run the workflow to completion
+        final_state = await self.rag_workflow.ainvoke(initial_state)
+
+        # Extract answer and documents
+        answer = final_state.get("generation", "")
+        documents = final_state.get("documents", [])
+
+        # Format sources for response
+        sources = [
+            {
+                "source": doc.metadata.get("source", "unknown"),
+                "preview": doc.page_content[:200] + "..."
+            }
+            for doc in documents
+        ]
+
         return {"answer": answer, "sources": sources}
 										
-    def run_full_rag_workflow_sync(self,
-                                question: str,
-                                collection_name: Optional[str] = None,
-                                chat_history: Optional[List[BaseMessage]] = None) -> Dict[str, Any]:
-        """Synchronous wrapper for the async workflow"""
-        import asyncio
-        import nest_asyncio
+    def run_full_rag_workflow_sync(
+        self,
+        question: str,
+        collection_name: Optional[str] = None,
+        chat_history: Optional[List[BaseMessage]] = None
+    ) -> Dict[str, Any]:
+        """
+        Synchronous wrapper that safely invokes the async RAG workflow.
         
-        # Try to get existing event loop, create new one if needed
+        Handles various event loop scenarios, including nested or missing loops,
+        with graceful fallbacks using `nest_asyncio` when available.
+        """
+        import asyncio
+
         try:
+            # Attempt to use the current event loop
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                nest_asyncio.apply()
-                return loop.run_until_complete(self.run_full_rag_workflow(question, collection_name, chat_history))
-            else:
-                return loop.run_until_complete(self.run_full_rag_workflow(question, collection_name, chat_history))
-        
+                # Running inside an existing loop (e.g., Jupyter); apply nest_asyncio if possible
+                try:
+                    import nest_asyncio
+                    nest_asyncio.apply()
+                except ImportError:
+                    pass  # Proceed without nesting; may fail in some environments
+            # Run the async workflow
+            return loop.run_until_complete(
+                self.run_full_rag_workflow(question, collection_name, chat_history)
+            )
+
         except RuntimeError:
-            # No event loop exists, create a new one
-            return asyncio.run(self.run_full_rag_workflow(question, collection_name, chat_history))
+            # No event loop exists—use asyncio.run (Python 3.7+)
+            return asyncio.run(
+                self.run_full_rag_workflow(question, collection_name, chat_history)
+            )
+
         except ImportError:
-            # nest_asyncio not available, create new event loop
+            # Fallback if nest_asyncio is missing and we're in a custom loop scenario
             new_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(new_loop)
             try:
@@ -2736,3 +2911,4 @@ class CoreRAGEngine:
                 )
             finally:
                 new_loop.close()
+
