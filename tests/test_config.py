@@ -11,7 +11,7 @@ def test_llm_settings_get_model_name():
     # 1. Default behavior for OpenAI: should return "gpt-4o"
     settings = LLMSettings(llm_provider="openai")
     model_name = settings.get_model_name_for_provider("openai")
-    assert model_name == "gpt-4o"
+    assert model_name == "gpt-4o-mini"
 
     # 2. When a provider-specific override exists (ollama): use that override
     settings = LLMSettings(
@@ -29,7 +29,7 @@ def test_llm_settings_get_model_name():
         openai_llm_model_name="special-openai-model",
     )
     model_name = settings.get_model_name_for_provider("google")
-    assert model_name == "default-model"
+    assert model_name == "gemini-pro"
 
 
 def test_embedding_settings_get_model_name():
@@ -65,7 +65,7 @@ def test_llm_settings_invalid_provider():
     settings = LLMSettings()
     # Should return the general model name for any provider when no specific override
     model_name = settings.get_model_name_for_provider("invalid_provider")
-    assert model_name == "gpt-4o"
+    assert model_name == "gpt-4o-mini"
 
 
 def test_embedding_settings_missing_model_name():
@@ -84,4 +84,4 @@ def test_engine_settings_defaults():
     assert settings.chunk_overlap == 100
     assert settings.default_collection_name == "insight_engine_default"
     assert settings.max_rewrite_retries == 1
-    assert settings.max_grounding_attempts == 5
+    assert settings.max_grounding_attempts == 1

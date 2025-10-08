@@ -17,7 +17,7 @@ class LLMSettings(BaseSettings):
     """LLM Provider and Model Configurations"""
 
     llm_provider: Literal["openai", "ollama", "google"] = "openai"
-    llm_model_name: str = "gpt-4o"
+    llm_model_name: str = "gpt-4o-mini"
 
     openai_llm_model_name: Optional[str] = None
     ollama_llm_model_name: Optional[str] = None
