@@ -417,9 +417,9 @@ def test_cache_invalidation_on_recreate(rag_engine):
     rag_engine.ingest(direct_documents=docs2, collection_name=cname, recreate_collection=True)
 
     # Clear both caches to force a complete refresh
-    if hasattr(rag_engine, 'vector_stores') and cname in rag_engine.vector_stores:
+    if hasattr(rag_engine, "vector_stores") and cname in rag_engine.vector_stores:
         del rag_engine.vector_stores[cname]
-    if hasattr(rag_engine, 'document_cache') and cname in rag_engine.document_cache:
+    if hasattr(rag_engine, "document_cache") and cname in rag_engine.document_cache:
         del rag_engine.document_cache[cname]
 
     # Verify cache shows only new docs (removed use_cache=False)

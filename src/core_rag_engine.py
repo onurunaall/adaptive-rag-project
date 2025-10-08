@@ -504,8 +504,7 @@ class CoreRAGEngine:
 
         except Exception as e:
             self.logger.warning(f"Error during cache maintenance: {e}", exc_info=True)
-    
-    
+
     def _create_query_analyzer_chain(self) -> Runnable:
         """
         Create chain for analyzing query characteristics.
@@ -539,15 +538,14 @@ class CoreRAGEngine:
                 "- 'not_a_question': Statements or commands\n\n"
                 "Provide your JSON response:"
             )
-            
+
             # Create the prompt template
             prompt = ChatPromptTemplate.from_template(
-                template=prompt_template,
-                partial_variables={"format_instructions": parser.get_format_instructions()}
+                template=prompt_template, partial_variables={"format_instructions": parser.get_format_instructions()}
             )
-            
+
             chain = prompt | self.json_llm | parser
-            
+
             self.logger.info("Query analyzer chain created successfully.")
             return chain
 
@@ -555,8 +553,7 @@ class CoreRAGEngine:
             error_msg = f"Failed to create query analyzer chain: {e}"
             self.logger.critical(error_msg, exc_info=True)
             raise RuntimeError(error_msg) from e
-        
-        
+
     def clear_document_cache(self, collection_name: Optional[str] = None) -> None:
         """
         Clear document cache to free memory.
@@ -1234,7 +1231,7 @@ class CoreRAGEngine:
         try:
             self.logger.info("Creating document re-ranker chain.")
             parser = PydanticOutputParser(pydantic_object=RerankScore)
-            
+
             prompt_template = (
                 "You are a document relevance scorer. Rate how relevant this document is "
                 "to answering the given question.\n\n"
@@ -1244,23 +1241,21 @@ class CoreRAGEngine:
                 "{format_instructions}\n\n"
                 "Provide your JSON response:"
             )
-            
+
             prompt = ChatPromptTemplate.from_template(
-                template=prompt_template,
-                partial_variables={"format_instructions": parser.get_format_instructions()}
+                template=prompt_template, partial_variables={"format_instructions": parser.get_format_instructions()}
             )
-            
+
             chain = prompt | self.json_llm | parser
-            
+
             self.logger.info("Document re-ranker chain created successfully.")
             return chain
-            
+
         except Exception as e:
             error_msg = f"Failed to create document re-ranker chain: {e}"
             self.logger.critical(error_msg, exc_info=True)
             raise RuntimeError(error_msg) from e
-        
-        
+
     def _create_hybrid_splitter(self) -> HybridChunker:
         """
         Create hybrid chunker with primary and secondary splitters.
@@ -1293,7 +1288,6 @@ class CoreRAGEngine:
             error_msg = f"Failed to create HybridChunker: {e}"
             self.logger.critical(error_msg, exc_info=True)
             raise RuntimeError(error_msg) from e
-
 
     def _create_default_splitter(self) -> RecursiveCharacterTextSplitter:
         """
@@ -1342,7 +1336,6 @@ class CoreRAGEngine:
             self.logger.critical(error_msg, exc_info=True)
             raise RuntimeError(error_msg) from e
 
-
     def _init_search_tool(self) -> Optional[Runnable]:
         """
         Initialize Tavily search tool if available.
@@ -1367,8 +1360,7 @@ class CoreRAGEngine:
             error_msg = f"Failed to initialize Tavily search tool: {e}"
             self.logger.error(error_msg, exc_info=True)
             return None
-        
-            
+
     def _create_document_relevance_grader_chain(self) -> Runnable:
         """
         Create chain for grading document relevance to questions.
