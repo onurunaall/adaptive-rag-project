@@ -3,6 +3,7 @@ from typing import List
 import logging
 import streamlit as st
 import json
+import asyncio
 
 from langchain_core.agents import AgentFinish, AgentAction
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
@@ -11,6 +12,7 @@ from src.core_rag_engine import CoreRAGEngine
 from src.stock import fetch_stock_news_documents
 from src.scraper import scrape_urls_as_documents
 from src.loop import AgentLoopWorkflow, AgentLoopState
+from mcp.rag_integration import MCPEnhancedRAG
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,6 +32,20 @@ st.title("InsightEngine – Adaptive RAG")
 def load_engine():
     return CoreRAGEngine()
 
+"""
+@st.cache_resource
+def load_engine():
+    core_engine = CoreRAGEngine()
+    mcp_engine = MCPEnhancedRAG(
+        core_rag_engine=core_engine,
+        enable_filesystem=True,
+        enable_memory=True,
+        enable_sql=True
+    )
+    # Initialize MCP servers
+    asyncio.run(mcp_engine.initialize_mcp_servers())
+    return mcp_engine
+"""
 
 engine = load_engine()
 

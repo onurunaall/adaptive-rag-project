@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from typing import List, Optional, Dict, Any, TypedDict
 
 from langchain_core.agents import AgentAction, AgentFinish
@@ -50,6 +51,10 @@ class AgentLoopState(TypedDict):
     final_summary: str
     retrieved_memories: Optional[str]
     error: Optional[str]
+    reflection_notes: List[str]  # Agent's thoughts about progress
+    failed_steps: List[tuple]     # Track failures for retry with different approach
+    max_iterations: int           # Prevent infinite loops
+    current_iteration: int
 
 
 class AgentLoopWorkflow:
@@ -260,3 +265,66 @@ class AgentLoopWorkflow:
         final_state = self.compiled_graph.invoke(initial_state)
         final_state["agent_outcome"] = AgentFinish(return_values={"output": final_state["final_summary"]}, log="")
         return final_state
+    
+def reflect_on_progress(self, state: AgentLoopState) -> dict:
+    """Agent reflects on whether it's making progress toward goal."""
+    reflection_prompt = f"""
+    Original Goal: {state['input']}
+    
+    Steps taken so far:
+    {self._format_past_steps(state['past_steps'])}
+    
+    Analyze:
+    1. Are we making progress toward the goal?
+    2. Should we continue with the current plan?
+    3. Do we need to revise our approach?
+    
+    Respond with JSON: {{"continue": bool, "reasoning": str, "suggested_changes": str}}
+    """
+    
+    reflection = self.chat_model.invoke(reflection_prompt)
+    return {"reflection_notes": state["reflection_notes"] + [reflection]}
+
+# Integrate with your existing memory_server.py
+async def _load_past_context(self, state: AgentLoopState) -> dict:
+    """Load relevant past conversations for context."""
+    # Use the MCP memory server you already have!
+    if self.mcp_memory_tool:
+        relevant_memories = await self.mcp_memory_tool.retrieve_relevant_memories(
+            query=state['input'],
+            top_k=3
+        )
+        return {"retrieved_memories": relevant_memories}
+    return {}
+
+async def _store_execution_memory(self, state: AgentLoopState):
+    """Store this execution for future reference."""
+    if self.mcp_memory_tool:
+        await self.mcp_memory_tool.store_conversation_context(
+            session_id=self._generate_session_id(),
+            question=state['input'],
+            answer=state['final_summary'],
+            context_docs=state['past_steps']
+        )
+
+async def execute_parallel_steps(self, state: AgentLoopState) -> dict:
+    """Execute independent steps in parallel for speed."""
+    plan_steps = state['plan'].steps
+    current_idx = state['current_step_index']
+    
+    # Identify independent steps (no dependencies)
+    parallel_steps = self._find_parallel_steps(plan_steps, current_idx)
+    
+    # Execute in parallel
+    tasks = [
+        self._execute_single_step(step) 
+        for step in parallel_steps
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Update state with all results
+    new_past_steps = state['past_steps'] + list(zip(parallel_steps, results))
+    return {
+        "past_steps": new_past_steps,
+        "current_step_index": current_idx + len(parallel_steps)
+    }
