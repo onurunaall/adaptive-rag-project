@@ -1,0 +1,61 @@
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+test_chroma_db/
+agent_test_chroma_db_e2e/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Local development
+.env.local
+.env.development
+*.log
+logs/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# ChromaDB data (use volumes instead)
+chroma_storage/
+mcp_data/
+
+# Other
+.DS_Store
+Thumbs.db

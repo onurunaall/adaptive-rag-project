@@ -1,0 +1,71 @@
+# InsightEngine Requirements
+# Generated for Python 3.9-3.10 compatibility
+
+# Core LangChain Stack (0.2.x for stability)
+langchain>=0.2.0,<0.3.0
+langchain-community>=0.2.0,<0.3.0
+langchain-core>=0.2.0,<0.3.0
+langchain-experimental>=0.0.50,<0.1.0
+langchain-openai>=0.1.0,<0.2.0
+langchain-google-genai>=1.0.0,<2.0.0
+langchainhub>=0.1.0,<0.2.0
+langgraph>=0.2.0,<0.3.0
+
+# LLM Providers
+openai>=1.0.0,<2.0.0
+google-generativeai>=0.3.0,<1.0.0
+
+# Vector Store & Embeddings
+chromadb>=0.4.0,<0.5.0
+gpt4all>=2.0.0,<3.0.0
+
+# Document Processing
+pypdf>=4.0.0,<5.0.0
+beautifulsoup4>=4.12.0,<5.0.0
+tiktoken>=0.7.0,<0.8.0
+python-docx>=1.1.0,<2.0.0
+openpyxl>=3.1.0,<4.0.0
+
+# Web Scraping & Search
+tavily-python>=0.3.0,<0.4.0
+# langchain-tavily>=0.1.0,<0.2.0  # Optional, conflicts with stable LangChain
+
+# Text Processing & Search
+rank-bm25>=0.2.0,<0.3.0
+scikit-learn>=1.4.0,<2.0.0
+spacy>=3.7.0,<4.0.0
+numpy>=1.24.0,<2.0.0
+
+# Configuration & Environment
+pydantic>=2.0.0,<3.0.0
+pydantic-settings>=2.0.0,<3.0.0
+python-dotenv>=1.0.0,<2.0.0
+
+# Web Framework
+streamlit>=1.35.0,<2.0.0
+
+# File System Monitoring
+watchdog>=4.0.0,<5.0.0
+
+# OCR Support (optional)
+pytesseract>=0.3.10,<0.4.0
+pillow>=10.0.0,<11.0.0
+
+# Database Support (optional)
+# neo4j>=5.15.0,<6.0.0  # Uncomment if using Neo4j
+
+# Async Support
+nest-asyncio>=1.5.0,<2.0.0
+
+# Development Dependencies (install with: pip install -e ".[dev]")
+# pytest>=7.4.0
+# pytest-mock>=3.12.0
+# pytest-asyncio>=0.21.0
+# black>=23.0.0
+# flake8>=6.1.0
+# mypy>=1.5.0
+# ruff>=0.1.0
+
+# MCP Support (install with: pip install -e ".[mcp]")
+# mcp>=1.6.0
+# langchain-mcp-adapters>=0.1.8
