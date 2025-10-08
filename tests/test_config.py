@@ -1,5 +1,3 @@
-import pytest
-
 from src.config import LLMSettings, EmbeddingSettings
 
 
@@ -19,7 +17,7 @@ def test_llm_settings_get_model_name():
     settings = LLMSettings(
         llm_provider="ollama",
         llm_model_name="default-model",
-        ollama_llm_model_name="special-ollama-model"
+        ollama_llm_model_name="special-ollama-model",
     )
     model_name = settings.get_model_name_for_provider("ollama")
     assert model_name == "special-ollama-model"
@@ -28,7 +26,7 @@ def test_llm_settings_get_model_name():
     settings = LLMSettings(
         llm_provider="google",
         llm_model_name="default-model",
-        openai_llm_model_name="special-openai-model"
+        openai_llm_model_name="special-openai-model",
     )
     model_name = settings.get_model_name_for_provider("google")
     assert model_name == "default-model"
@@ -47,10 +45,7 @@ def test_embedding_settings_get_model_name():
     assert model_name == "text-embedding-3-small"
 
     # 2. Custom override for OpenAI embedding model
-    settings = EmbeddingSettings(
-        embedding_provider="openai",
-        embedding_model_name="my-custom-embedding-model"
-    )
+    settings = EmbeddingSettings(embedding_provider="openai", embedding_model_name="my-custom-embedding-model")
     model_name = settings.get_model_name_for_provider("openai")
     assert model_name == "my-custom-embedding-model"
 
@@ -60,12 +55,10 @@ def test_embedding_settings_get_model_name():
     assert model_name == "models/embedding-001"
 
     # 4. For gpt4all, fallback to embedding_model_name if provided
-    settings = EmbeddingSettings(
-        embedding_provider="gpt4all",
-        embedding_model_name="custom-gpt4all-model"
-    )
+    settings = EmbeddingSettings(embedding_provider="gpt4all", embedding_model_name="custom-gpt4all-model")
     model_name = settings.get_model_name_for_provider("gpt4all")
     assert model_name == "custom-gpt4all-model"
+
 
 def test_llm_settings_invalid_provider():
     """Test behavior with invalid provider names."""
@@ -74,15 +67,18 @@ def test_llm_settings_invalid_provider():
     model_name = settings.get_model_name_for_provider("invalid_provider")
     assert model_name == "gpt-4o"
 
+
 def test_embedding_settings_missing_model_name():
     """Test behavior when no model name is specified for gpt4all."""
     settings = EmbeddingSettings(embedding_provider="gpt4all", embedding_model_name=None)
     model_name = settings.get_model_name_for_provider("gpt4all")
     assert model_name is None
-    
+
+
 def test_engine_settings_defaults():
     """Test that EngineSettings has proper defaults."""
     from src.config import EngineSettings
+
     settings = EngineSettings()
     assert settings.chunk_size == 500
     assert settings.chunk_overlap == 100

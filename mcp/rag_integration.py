@@ -5,13 +5,13 @@ except ImportError:
     MultiServerMCPClient = None
     MCP_AVAILABLE = False
 
-from langchain.tools import BaseTool, Tool
+from langchain.tools import BaseTool
 from typing import List, Dict, Any, Optional
 import asyncio
 from datetime import datetime
 import logging
 from pathlib import Path
-from langchain.schema import Document
+from langchain_core.documents import Document
 import numpy as np
 from src.config import settings as app_settings
 

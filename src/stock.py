@@ -1,7 +1,8 @@
-from typing import List, Dict, Union
+from typing import List, Union
 from langchain_community.tools.yahoo_finance_news import YahooFinanceNewsTool
-from langchain.schema import Document
+from langchain_core.documents import Document
 import logging
+
 
 def fetch_stock_news_documents(tickers_input: Union[str, List[str]], max_articles_per_ticker: int) -> List[Document]:
     """
@@ -10,7 +11,7 @@ def fetch_stock_news_documents(tickers_input: Union[str, List[str]], max_article
 
     Args:
         tickers_input: A single ticker string, a comma-separated string of tickers, or a list of ticker strings.
-        max_articles_per_ticker: The maximum number of articles to fetch per ticker. 
+        max_articles_per_ticker: The maximum number of articles to fetch per ticker.
                                  Note: YahooFinanceNewsTool might have its own internal limits or behavior regarding this.
                                  The tool itself takes a single string of comma-separated tickers.
 
@@ -40,15 +41,15 @@ def fetch_stock_news_documents(tickers_input: Union[str, List[str]], max_article
 
     if isinstance(results, list):
         for article_info in results:
-            content = article_info.get('summary', '')
-            if not content and article_info.get('title'):
-                content = article_info.get('title')
+            content = article_info.get("summary", "")
+            if not content and article_info.get("title"):
+                content = article_info.get("title")
 
             metadata = {
-                "source": article_info.get('link', 'Unknown Yahoo Finance URL'),
-                "title": article_info.get('title', 'No Title'),
-                "published_date": article_info.get('published', 'Unknown Publish Date'),
-                "tickers": tickers_str
+                "source": article_info.get("link", "Unknown Yahoo Finance URL"),
+                "title": article_info.get("title", "No Title"),
+                "published_date": article_info.get("published", "Unknown Publish Date"),
+                "tickers": tickers_str,
             }
             documents.append(Document(page_content=content, metadata=metadata))
 

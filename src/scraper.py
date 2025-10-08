@@ -1,7 +1,8 @@
 from typing import List, Optional
 from langchain_community.document_loaders import WebBaseLoader
-from langchain.schema import Document
+from langchain_core.documents import Document
 import logging
+
 
 def scrape_urls_as_documents(urls: List[str], user_goal_for_scraping: Optional[str] = None) -> List[Document]:
     """
@@ -31,8 +32,8 @@ def scrape_urls_as_documents(urls: List[str], user_goal_for_scraping: Optional[s
         for doc in loaded_docs:
             if user_goal_for_scraping:
                 doc.metadata["user_goal_for_scraping"] = user_goal_for_scraping
-            if 'source' not in doc.metadata and hasattr(doc, 'metadata') and 'url' in doc.metadata:
-                doc.metadata['source'] = doc.metadata['url']
+            if "source" not in doc.metadata and hasattr(doc, "metadata") and "url" in doc.metadata:
+                doc.metadata["source"] = doc.metadata["url"]
             all_docs.append(doc)
 
     except Exception as e:
