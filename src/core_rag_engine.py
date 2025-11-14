@@ -32,6 +32,20 @@ from src.hybrid_search import AdaptiveHybridRetriever
 from src.advanced_grounding import MultiLevelGroundingChecker
 from src.context_manager import ContextManager
 
+# Import refactored RAG components
+from src.rag import (
+    GroundingCheck,
+    RelevanceGrade,
+    RerankScore,
+    QueryAnalysis,
+    CoreGraphState,
+    LLMFactory,
+    EmbeddingFactory,
+    TextSplitterFactory,
+    ChainFactory,
+    ErrorHandler,
+)
+
 try:
     from streamlit.runtime.uploaded_file_manager import UploadedFile
 except ImportError:
@@ -53,91 +67,6 @@ PROMPT_TEMPLATE = (
     "Question:\n{question}\n\n"
     "Answer:"
 )
-
-
-class GroundingCheck(BaseModel):
-    """
-    Structured output for answer grounding and hallucination check.
-    """
-
-    is_grounded: bool = Field(description="Is the generated answer fully supported by the provided context? True or False.")
-
-    ungrounded_statements: Optional[List[str]] = Field(
-        default=None,
-        description="List any specific statements in the answer that are NOT supported by the context.",
-    )
-
-    correction_suggestion: Optional[str] = Field(
-        default=None,
-        description="If not grounded, suggest how to rephrase the answer to be grounded, or state no grounded answer is possible.",
-    )
-
-
-class RelevanceGrade(BaseModel):
-    """
-    Structured output for document relevance grading.
-    """
-
-    is_relevant: bool = Field(description="Is the document excerpt relevant to the question? True or False.")
-
-    justification: Optional[str] = Field(
-        default=None,
-        description="Brief justification for the relevance decision (1-2 sentences).",
-    )
-
-
-class RerankScore(BaseModel):
-    """
-    Pydantic model for contextual re-ranking scores.
-    """
-
-    relevance_score: float = Field(
-        description="A score from 0.0 to 1.0 indicating the document's direct relevance to answering the question."
-    )
-    justification: str = Field(description="A brief justification for the assigned score.")
-
-
-class QueryAnalysis(BaseModel):
-    """
-    Structured output for sophisticated query analysis.
-    """
-
-    query_type: str = Field(
-        description="Classify the query's primary type (e.g., 'factual_lookup', 'comparison', 'summary_request', 'complex_reasoning', 'ambiguous', 'keyword_search_sufficient', 'greeting', 'not_a_question')."
-    )
-
-    main_intent: str = Field(
-        description="A concise sentence describing the primary user intent or what the user wants to achieve."
-    )
-
-    extracted_keywords: List[str] = Field(
-        default_factory=list,
-        description="A list of key nouns, verbs, and named entities from the query that are critical for effective retrieval.",
-    )
-
-    is_ambiguous: bool = Field(
-        default=False,
-        description="True if the query is vague, unclear, or open to multiple interpretations and might benefit from clarification before proceeding.",
-    )
-
-
-class CoreGraphState(TypedDict):
-    question: str
-    original_question: Optional[str]
-    query_analysis_results: Optional[QueryAnalysis]
-    documents: List[Document]
-    context: str
-    web_search_results: Optional[List[Document]]
-    generation: str
-    retries: int
-    run_web_search: str  # "Yes" or "No"
-    relevance_check_passed: Optional[bool]
-    error_message: Optional[str]
-    grounding_check_attempts: int
-    regeneration_feedback: Optional[str]
-    collection_name: Optional[str]
-    chat_history: Optional[List[BaseMessage]]
-    context_was_truncated: Optional[bool]
 
 
 class CoreRAGEngine:
@@ -236,25 +165,57 @@ class CoreRAGEngine:
         # --- Logger Setup ---
         self._setup_logger()
 
-        # --- Core Components Initialization ---
-        # Initialize LLMs (normal output and JSON-formatted output)
-        self.llm = self._init_llm(use_json_format=False)
-        self.json_llm = self._init_llm(use_json_format=True)
+        # --- Core Components Initialization using Factories ---
+        # Initialize LLM Factory and create LLMs
+        self.llm_factory = LLMFactory(
+            llm_provider=self.llm_provider,
+            llm_model_name=self.llm_model_name,
+            temperature=self.temperature,
+            openai_api_key=self.openai_api_key,
+            google_api_key=self.google_api_key,
+            logger=self.logger,
+        )
+        self.llm = self.llm_factory.create_llm(use_json_format=False)
+        self.json_llm = self.llm_factory.create_llm(use_json_format=True)
 
-        # Initialize Embedding Model
-        self.embedding_model = self._init_embedding_model()
+        # Initialize Embedding Factory and create embedding model
+        self.embedding_factory = EmbeddingFactory(
+            embedding_provider=self.embedding_provider,
+            embedding_model_name=self.embedding_model_name,
+            openai_api_key=self.openai_api_key,
+            google_api_key=self.google_api_key,
+            logger=self.logger,
+        )
+        self.embedding_model = self.embedding_factory.create_embedding_model()
 
-        # Initialize Text Splitter and Web Search Tool
-        self.text_splitter = self._init_text_splitter()
-        self.search_tool = self._init_search_tool()
+        # Initialize Text Splitter Factory and create text splitter
+        self.text_splitter_factory = TextSplitterFactory(
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
+            llm_provider=self.llm_provider,
+            llm_model_name=self.llm_model_name,
+            openai_api_key=self.openai_api_key,
+            logger=self.logger,
+        )
+        self.text_splitter = self.text_splitter_factory.create_text_splitter()
 
-        # --- Individual LLM Chains for Workflow Steps ---
-        self.document_relevance_grader_chain = self._create_document_relevance_grader_chain()
-        self.document_reranker_chain = self._create_document_reranker_chain()
-        self.query_rewriter_chain = self._create_query_rewriter_chain()
-        self.answer_generation_chain = self._create_answer_generation_chain()
-        self.grounding_check_chain = self._create_grounding_check_chain()
-        self.query_analyzer_chain = self._create_query_analyzer_chain()
+        # Initialize Chain Factory and create chains
+        self.chain_factory = ChainFactory(
+            llm=self.llm,
+            json_llm=self.json_llm,
+            tavily_api_key=self.tavily_api_key,
+            logger=self.logger,
+        )
+        self.document_relevance_grader_chain = self.chain_factory.create_document_relevance_grader_chain()
+        self.document_reranker_chain = self.chain_factory.create_document_reranker_chain()
+        self.query_rewriter_chain = self.chain_factory.create_query_rewriter_chain()
+        self.answer_generation_chain = self.chain_factory.create_answer_generation_chain()
+        self.grounding_check_chain = self.chain_factory.create_grounding_check_chain()
+        self.query_analyzer_chain = self.chain_factory.create_query_analyzer_chain()
+        self.search_tool = self.chain_factory.create_search_tool()
+
+        # Initialize Error Handler
+        self.error_handler = ErrorHandler(logger=self.logger)
 
         # --- Workflow Graph Compilation ---
         self._compile_rag_workflow()
@@ -893,154 +854,6 @@ class CoreRAGEngine:
             error_msg = f"Unexpected error in _setup_retriever_for_collection for '{collection_name}': {e}"
             self.logger.critical(error_msg, exc_info=True)
             raise RuntimeError(error_msg) from e
-
-    def _init_llm(self, use_json_format: bool) -> Any:
-        try:
-            provider = self.llm_provider.lower()
-
-            if provider == "openai":
-                return self._init_openai_llm(use_json_format)
-            if provider == "ollama":
-                return self._init_ollama_llm(use_json_format)
-            if provider == "google":
-                return self._init_google_llm(use_json_format)
-
-            error_msg = f"Unsupported LLM provider configured: '{self.llm_provider}'"
-            self.logger.error(error_msg)
-            raise ValueError(error_msg)
-        except Exception as e:
-            error_msg = f"Critical error initializing LLM (Provider: {self.llm_provider}, JSON: {use_json_format}): {e}"
-            self.logger.critical(error_msg, exc_info=True)
-            raise RuntimeError(error_msg) from e
-
-    def _init_openai_llm(self, use_json: bool) -> ChatOpenAI:
-        try:
-            self._validate_openai_api_key()
-
-            # Build the configuration dictionary for the OpenAI LLM
-            openai_config = self._build_openai_config(use_json)
-
-            openai_llm = ChatOpenAI(**openai_config)
-            self.logger.info(f"OpenAI LLM '{self.llm_model_name}' initialized successfully (JSON: {use_json}).")
-            return openai_llm
-        except Exception as e:
-            error_msg = f"Failed to initialize OpenAI LLM '{self.llm_model_name}': {e}"
-            self.logger.critical(error_msg, exc_info=True)
-            raise RuntimeError(error_msg) from e
-
-    def _init_ollama_llm(self, use_json: bool) -> ChatOllama:
-
-        try:
-            format_type = self._get_ollama_format(use_json)
-            ollama_llm = ChatOllama(
-                model=self.llm_model_name,
-                temperature=self.temperature,
-                format=format_type,
-            )
-            self.logger.info(
-                f"Ollama LLM '{self.llm_model_name}' initialized successfully (JSON: {use_json}, Format: {format_type})."
-            )
-            return ollama_llm
-        except Exception as e:
-            error_msg = f"Failed to initialize Ollama LLM '{self.llm_model_name}': {e}"
-            self.logger.critical(error_msg, exc_info=True)
-            raise RuntimeError(error_msg) from e
-
-    def _init_google_llm(self, use_json: bool) -> ChatGoogleGenerativeAI:
-        try:
-            self._validate_google_api_key()
-
-            # Build the configuration dictionary for the Google LLM
-            google_config = self._build_google_config(use_json)
-
-            google_llm = ChatGoogleGenerativeAI(**google_config)
-            self.logger.info(f"Google LLM '{self.llm_model_name}' initialized successfully (JSON: {use_json}).")
-            return google_llm
-        except Exception as e:
-            error_msg = f"Failed to initialize Google LLM '{self.llm_model_name}': {e}"
-            self.logger.critical(error_msg, exc_info=True)
-            raise RuntimeError(error_msg) from e
-
-    def _validate_openai_api_key(self) -> None:
-        try:
-            if not self.openai_api_key:
-                error_msg = "OPENAI_API_KEY is missing or empty. It is required for OpenAI LLM/embedding operations."
-                self.logger.error(error_msg)
-                raise ValueError(error_msg)
-            else:
-                self.logger.debug("OpenAI API key validation successful.")
-        except Exception as e:
-            error_msg = f"Unexpected error during OpenAI API key validation: {e}"
-            self.logger.critical(error_msg, exc_info=True)
-            raise RuntimeError(error_msg) from e
-
-    def _validate_google_api_key(self) -> None:
-        try:
-            if not self.google_api_key:
-                error_msg = "GOOGLE_API_KEY is missing or empty. It is required for Google LLM/embedding operations."
-                self.logger.error(error_msg)
-                raise ValueError(error_msg)
-            else:
-                self.logger.debug("Google API key validation successful.")
-        except Exception as e:
-            error_msg = f"Unexpected error during Google API key validation: {e}"
-            self.logger.critical(error_msg, exc_info=True)
-            raise RuntimeError(error_msg) from e
-
-    def _build_openai_config(self, use_json: bool) -> Dict[str, Any]:
-        try:
-            config_args: Dict[str, Any] = {
-                "model": self.llm_model_name,
-                "temperature": self.temperature,
-                "openai_api_key": self.openai_api_key,
-            }
-
-            # Add JSON formatting configuration if requested
-            if use_json:
-                config_args["model_kwargs"] = {"response_format": {"type": "json_object"}}
-                self.logger.info(f"JSON response format enabled for OpenAI model '{self.llm_model_name}'.")
-
-            self.logger.debug(f"OpenAI config built successfully: {config_args}")
-            return config_args
-
-        except Exception as e:
-            error_msg = f"Failed to build OpenAI configuration: {e}"
-            self.logger.critical(error_msg, exc_info=True)
-            raise RuntimeError(error_msg) from e
-
-    def _build_google_config(self, use_json: bool) -> Dict[str, Any]:
-        try:
-            # Initialize the base configuration dictionary
-            config_kwargs: Dict[str, Any] = {
-                "model": self.llm_model_name,
-                "temperature": self.temperature,
-                "google_api_key": self.google_api_key,
-                "convert_system_message_to_human": True,
-            }
-
-            # Add JSON formatting configuration if requested
-            if use_json:
-                config_kwargs["model_kwargs"] = {"response_mime_type": "application/json"}
-                self.logger.info(f"JSON response format enabled for Google model '{self.llm_model_name}'.")
-
-            self.logger.debug(f"Google config built successfully: {config_kwargs}")
-            return config_kwargs
-
-        except Exception as e:
-            error_msg = f"Failed to build Google configuration: {e}"
-            self.logger.critical(error_msg, exc_info=True)
-            raise RuntimeError(error_msg) from e
-
-    def _get_ollama_format(self, use_json: bool) -> Optional[str]:
-        try:
-            # Determine the format string based on the use_json flag
-            format_param = "json" if use_json else None
-            self.logger.debug(f"Ollama format parameter determined: {format_param} (use_json: {use_json})")
-            return format_param
-        except Exception as e:
-            error_msg = f"Unexpected error determining Ollama format parameter: {e}"
-            self.logger.error(error_msg, exc_info=True)
-            return None
 
     def _init_embedding_model(self) -> Any:
         try:
