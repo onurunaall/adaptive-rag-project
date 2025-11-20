@@ -7,25 +7,25 @@ name = "adaptive_rag_project"
 version = "0.2.0"
 description = "Adaptive RAG with Llama-3 and integrated workflows."
 readme = "README.md"
-requires-python = ">=3.9,<3.13"
+requires-python = ">=3.10,<3.14"
 license = {text = "MIT"}
 authors = [{ name = "Onur Ünal", email = "upklw@student.kit.edu" }]
 
 dependencies = [
-    # Core LangChain Stack - Use compatible versions
-    "langchain>=0.2.0,<0.3.0",
-    "langchain-community>=0.2.0,<0.3.0",
-    "langchain-core>=0.2.0,<0.3.0",
-    "langchain-openai>=0.1.0,<0.2.0",
-    "langchain-google-genai>=1.0.0,<2.0.0",
-    "langgraph>=0.2.0,<0.3.0",
-    "langchain-experimental>=0.0.50,<0.1.0",
+    # Core LangChain Stack - Updated to support 1.x versions
+    "langchain>=0.2.0,<2.0.0",
+    "langchain-community>=0.2.0,<2.0.0",
+    "langchain-core>=0.2.0,<2.0.0",
+    "langchain-openai>=0.1.0,<2.0.0",
+    "langchain-google-genai>=1.0.0,<3.0.0",
+    "langgraph>=0.2.0,<2.0.0",
+    "langchain-experimental>=0.0.50,<2.0.0",
     
     # LLM Providers
     "openai>=1.0.0,<2.0.0",
     
     # Vector Store & Embeddings
-    "chromadb>=0.4.22,<0.6.0",
+    "chromadb>=0.4.22,<0.7.0",
     
     # Configuration
     "pydantic>=2.0.0,<3.0.0",
@@ -38,7 +38,7 @@ dependencies = [
     "tiktoken>=0.5.0,<1.0.0",
     
     # Web Framework
-    "streamlit>=1.35.0,<2.0.0",
+    "streamlit>=1.35.0,<3.0.0",
     
     # Search & Retrieval
     "tavily-python>=0.3.0,<0.4.0",
@@ -75,7 +75,7 @@ exclude = ["tests*", "docs*"]
 
 [tool.black]
 line-length = 127
-target-version = ['py39', 'py310']
+target-version = ['py310', 'py311', 'py312']
 include = '\.pyi?$'
 
 [tool.pytest.ini_options]
@@ -87,7 +87,7 @@ addopts = "-v --tb=short"
 asyncio_mode = "auto"
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true

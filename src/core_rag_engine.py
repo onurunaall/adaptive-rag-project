@@ -798,18 +798,21 @@ class CoreRAGEngine:
 
                     # Use streaming for large collections
                     if doc_count and doc_count > 10000:
+                        # IMPORTANT: Hybrid search requires loading documents into memory for BM25/TF-IDF indexing
+                        # Limit to prevent memory exhaustion (10,000 docs ≈ 20-30MB RAM)
+                        max_hybrid_docs = 10000
                         self.logger.warning(
-                            f"Large collection ({doc_count} docs) - hybrid search may be slow. " f"Loading in batches..."
+                            f"Large collection ({doc_count} docs) - limiting hybrid search to {max_hybrid_docs} docs to prevent memory issues."
                         )
 
-                        # Stream documents in batches
+                        # Stream documents in batches with strict limit
                         all_docs = []
                         for batch in self._stream_documents_from_collection(collection_name, batch_size=1000):
                             all_docs.extend(batch)
 
-                            # Limit for hybrid search (BM25 performance degrades with huge corpus)
-                            if len(all_docs) >= 50000:
-                                self.logger.warning(f"Limiting hybrid search to 50,000 docs (collection has {doc_count})")
+                            # Stop at reasonable limit to prevent memory exhaustion
+                            if len(all_docs) >= max_hybrid_docs:
+                                self.logger.info(f"Loaded {len(all_docs)} documents for hybrid search (limit: {max_hybrid_docs})")
                                 break
                     else:
                         # Small collection - load normally
