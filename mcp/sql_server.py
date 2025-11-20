@@ -66,7 +66,11 @@ def _sanitize_identifier(identifier: str) -> str:
     """
     Validate and sanitize SQL identifiers.
     Only allows alphanumeric, underscore, and dollar sign.
+    Strips leading/trailing whitespace before validation.
     """
+    # Strip whitespace for convenience
+    identifier = identifier.strip()
+
     if not re.match(r'^[a-zA-Z_$][a-zA-Z0-9_$]*$', identifier):
         raise ValueError(f"Invalid identifier: {identifier}")
     return identifier

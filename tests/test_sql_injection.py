@@ -15,8 +15,8 @@ class TestSQLInjectionPrevention:
     """Test SQL injection prevention mechanisms."""
 
     def test_sanitize_identifier_blocks_sql_injection(self):
-        """Test that SQL injection attempts are blocked."""
-        # Test basic SQL injection attempts
+        """Test that SQL injection attempts are rejected with ValueError."""
+        # Test basic SQL injection attempts - should raise ValueError
         malicious_inputs = [
             "users; DROP TABLE users--",
             "users' OR '1'='1",
@@ -29,12 +29,8 @@ class TestSQLInjectionPrevention:
         ]
 
         for malicious_input in malicious_inputs:
-            result = _sanitize_identifier(malicious_input)
-            # Should strip out dangerous characters
-            assert ";" not in result, f"Semicolon not removed from: {malicious_input}"
-            assert "--" not in result, f"Comment not removed from: {malicious_input}"
-            assert "DROP" not in result.upper() or result == "drop", f"DROP not handled in: {malicious_input}"
-            assert "UNION" not in result.upper() or result == "union", f"UNION not handled in: {malicious_input}"
+            with pytest.raises(ValueError, match="Invalid identifier"):
+                _sanitize_identifier(malicious_input)
 
     def test_sanitize_identifier_allows_valid_names(self):
         """Test that valid identifiers are allowed."""
@@ -47,40 +43,40 @@ class TestSQLInjectionPrevention:
         ]
 
         for valid_input in valid_inputs:
+            # Should not raise ValueError
             result = _sanitize_identifier(valid_input)
-            # Should match alphanumeric and underscores only
-            assert result.replace("_", "").isalnum(), f"Valid input modified: {valid_input} -> {result}"
-            # Should preserve the input (case may vary)
-            assert len(result) > 0, f"Valid input rejected: {valid_input}"
+            assert isinstance(result, str)
+            assert len(result) > 0
 
     def test_quote_identifier_properly_escapes(self):
         """Test that identifiers are properly quoted."""
         test_cases = [
             ("users", '"users"'),
             ("user_table", '"user_table"'),
-            ("Users", '"users"'),  # Should be lowercase
         ]
 
         for input_val, expected in test_cases:
             result = _quote_identifier(input_val)
-            assert result.startswith('"') and result.endswith('"'), f"Not properly quoted: {result}"
+            assert result.startswith('"') and result.endswith('"')
 
     def test_sanitize_empty_and_whitespace(self):
-        """Test edge cases with empty and whitespace inputs."""
+        """Test edge cases with empty and whitespace inputs raise ValueError."""
         edge_cases = [
             "",
             "   ",
             "\t\n",
-            "  table  ",
         ]
 
         for edge_case in edge_cases:
-            result = _sanitize_identifier(edge_case)
-            # Should handle gracefully (either empty or trimmed)
-            assert isinstance(result, str), f"Didn't return string for: {repr(edge_case)}"
+            with pytest.raises(ValueError, match="Invalid identifier"):
+                _sanitize_identifier(edge_case)
+
+        # Whitespace-padded valid name should work after strip
+        result = _sanitize_identifier("  table  ")
+        assert result == "table"
 
     def test_sanitize_special_characters(self):
-        """Test that special characters are removed."""
+        """Test that special characters cause ValueError."""
         special_chars = [
             "table@name",
             "table#name",
@@ -94,9 +90,8 @@ class TestSQLInjectionPrevention:
         ]
 
         for special_input in special_chars:
-            result = _sanitize_identifier(special_input)
-            # Should only contain alphanumeric and underscores
-            assert all(c.isalnum() or c == '_' for c in result), f"Special chars not removed from: {special_input}"
+            with pytest.raises(ValueError, match="Invalid identifier"):
+                _sanitize_identifier(special_input)
 
     def test_sql_keyword_handling(self):
         """Test handling of SQL keywords as table names."""
