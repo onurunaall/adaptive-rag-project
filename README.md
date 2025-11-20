@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Python Version](https://img.shields.io/badge/python-3.12+-blue.svg)
+![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)
 ![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)
@@ -168,8 +168,8 @@ Production-ready Streamlit interface with real-time streaming.
 
 ### Prerequisites
 
-- Python 3.12 or higher
-- pip or poetry for package management
+- **Python 3.10 or higher** (Python 3.9 reached EOL in October 2025)
+- pip for package management
 - OpenAI API key (for OpenAI models)
 - (Optional) Google API key for Gemini models
 - (Optional) Tavily API key for web search
@@ -185,8 +185,8 @@ cd adaptive-rag-project
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Install dependencies using pip (project uses pyproject.toml)
+pip install -e ".[dev]"
 
 # Set up environment variables
 cp .env.example .env
@@ -329,20 +329,17 @@ print(result["answer"])
 # Output: "The capital of France is Paris."
 ```
 
-### Command Line Interface
+### Streamlit Web Interface
 
 ```bash
-# Ingest documents
-python -m src.cli ingest --path ./documents --collection my_docs
+# Run the web UI
+streamlit run src/main_app.py
 
-# Query
-python -m src.cli query "What is machine learning?" --collection my_docs
+# Or use the Makefile
+make run
 
-# List collections
-python -m src.cli list-collections
-
-# Get cache statistics
-python -m src.cli cache-stats
+# For MCP-enhanced version with conversation memory
+streamlit run src/main_app_mcp_enhanced.py
 ```
 
 ---

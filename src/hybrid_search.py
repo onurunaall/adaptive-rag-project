@@ -26,16 +26,21 @@ class HybridRetriever(BaseRetriever):
         self.alpha = alpha  # Semantic search weight
         self.k = k
 
+        # Build indices - optimized for memory efficiency
+        # Extract corpus once for indexing
+        corpus = [doc.page_content for doc in documents]
+
         # Build BM25 index
-        self.corpus = [doc.page_content for doc in documents]
-        self.tokenized_corpus = [doc.split() for doc in self.corpus]
-        self.bm25 = BM25Okapi(self.tokenized_corpus)
+        tokenized_corpus = [doc.split() for doc in corpus]
+        self.bm25 = BM25Okapi(tokenized_corpus)
+        # tokenized_corpus is garbage collected after BM25 construction
 
         # Build TF-IDF index for additional keyword matching
         self.tfidf_vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2), max_features=10000)
-        self.tfidf_matrix = self.tfidf_vectorizer.fit_transform(self.corpus)
+        self.tfidf_matrix = self.tfidf_vectorizer.fit_transform(corpus)
+        # corpus is garbage collected after TF-IDF construction
 
-        # Document mapping
+        # Document mapping (keep for retrieval)
         self.doc_id_to_doc = {i: doc for i, doc in enumerate(documents)}
 
     def _get_relevant_documents(self, query: str) -> List[Document]:
