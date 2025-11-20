@@ -16,6 +16,7 @@ from src.rag.embedding_factory import EmbeddingFactory
 from src.rag.text_splitter_factory import TextSplitterFactory
 from src.rag.chain_factory import ChainFactory
 from src.rag.error_handler import ErrorHandler
+from src.rag.cache_manager import CacheManager
 
 __all__ = [
     # Models
@@ -31,4 +32,5 @@ __all__ = [
     "ChainFactory",
     # Utilities
     "ErrorHandler",
+    "CacheManager",
 ]
