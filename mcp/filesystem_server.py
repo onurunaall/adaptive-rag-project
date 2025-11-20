@@ -40,6 +40,55 @@ except ImportError:
 
 mcp = FastMCP("FileSystemRAG")
 
+# Security configuration - allowed base paths for file operations
+# Prevents path traversal attacks by restricting access to specific directories
+ALLOWED_BASE_PATHS = [
+    Path.cwd(),  # Current working directory
+    Path.home() / "documents",  # User documents
+    Path("/tmp"),  # Temporary files
+]
+
+# You can also configure this via environment variable
+_custom_paths = os.getenv("MCP_ALLOWED_PATHS")
+if _custom_paths:
+    for custom_path in _custom_paths.split(":"):
+        try:
+            ALLOWED_BASE_PATHS.append(Path(custom_path).resolve())
+        except Exception:
+            pass
+
+
+def _validate_path_security(filepath: str) -> tuple[bool, str, Path]:
+    """
+    Validate that a file path is within allowed directories to prevent path traversal attacks.
+
+    Args:
+        filepath: Path to validate
+
+    Returns:
+        Tuple of (is_valid, error_message, resolved_path)
+    """
+    try:
+        path = Path(filepath).resolve()
+
+        # Check if path is within any allowed base path
+        for allowed_base in ALLOWED_BASE_PATHS:
+            try:
+                allowed_base_resolved = allowed_base.resolve()
+                # Use is_relative_to() to check if path is within allowed directory
+                # This prevents ../../../etc/passwd type attacks
+                if path.is_relative_to(allowed_base_resolved):
+                    return True, "", path
+            except (ValueError, RuntimeError):
+                continue
+
+        allowed_paths_str = ", ".join(str(p) for p in ALLOWED_BASE_PATHS)
+        return False, f"Access denied: Path '{filepath}' is not within allowed directories: {allowed_paths_str}", path
+
+    except Exception as e:
+        return False, f"Invalid path: {e}", Path()
+
+
 # Global state for file tracking
 file_cache = {}
 deleted_files_queue = queue.Queue()
@@ -82,21 +131,27 @@ active_observers = {}
 async def start_monitoring(path: str, file_types: list[str] = None) -> dict:
     """
     Start real-time monitoring of a directory using watchdog.
-    
+
+    Security: Path is validated to prevent monitoring of unauthorized directories.
+
     Args:
         path: Directory path to monitor
         file_types: List of file extensions to track
-    
+
     Returns:
         Status of monitoring initialization
     """
     if not WATCHDOG_AVAILABLE:
         return {"error": "watchdog library not installed. Install with: pip install watchdog"}
-    
+
     file_types = file_types or ['pdf', 'txt', 'md', 'docx', 'html']
-    
+
     try:
-        path_obj = Path(path)
+        # Validate path security first
+        is_valid, error_msg, path_obj = _validate_path_security(path)
+        if not is_valid:
+            return {"error": error_msg}
+
         if not path_obj.exists():
             return {"error": f"Path does not exist: {path}"}
         
@@ -260,15 +315,21 @@ async def monitor_directory(path: str, file_types: list[str] = None, recursive: 
 async def get_file_metadata(filepath: str) -> dict:
     """
     Extract detailed metadata from a file for enhanced indexing.
-    
+
+    Security: Path is validated to prevent path traversal attacks.
+
     Args:
         filepath: Path to the file
-    
+
     Returns:
         Dictionary with file metadata
     """
     try:
-        path = Path(filepath)
+        # Validate path security first
+        is_valid, error_msg, path = _validate_path_security(filepath)
+        if not is_valid:
+            return {"error": error_msg}
+
         if not path.exists():
             return {"error": f"File does not exist: {filepath}"}
         
@@ -310,16 +371,22 @@ async def get_file_metadata(filepath: str) -> dict:
 async def read_file_content(filepath: str, encoding: str = "utf-8") -> dict:
     """
     Read the content of a file for ingestion.
-    
+
+    Security: Path is validated to prevent path traversal attacks.
+
     Args:
         filepath: Path to the file
         encoding: File encoding (default: utf-8)
-    
+
     Returns:
         Dictionary with file content and metadata
     """
     try:
-        path = Path(filepath)
+        # Validate path security first
+        is_valid, error_msg, path = _validate_path_security(filepath)
+        if not is_valid:
+            return {"error": error_msg}
+
         if not path.exists():
             return {"error": f"File does not exist: {filepath}"}
         

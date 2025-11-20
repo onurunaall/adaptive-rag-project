@@ -84,7 +84,14 @@ def _init_db():
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_session_id ON conversations(session_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_timestamp ON conversations(timestamp)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_keywords ON conversations(keywords)')
-    
+
+    # Additional indexes for optimized queries
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_conversation_id ON conversations(conversation_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_embeddings_conversation_id ON embeddings(conversation_id)')
+
+    # Composite index for common query pattern (session + time-ordered retrieval)
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_session_timestamp ON conversations(session_id, timestamp DESC)')
+
     conn.commit()
     conn.close()
 

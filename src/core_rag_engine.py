@@ -2015,32 +2015,57 @@ class CoreRAGEngine:
 
             self.logger.info(f"Re-ranking {len(docs)} documents for question: '{question}'")
 
-            # Rerank Documents
+            # Rerank Documents - OPTIMIZED: Batch process to avoid N+1 queries
             docs_with_scores: List[Tuple[Document, float]] = []
 
-            for idx, doc in enumerate(docs):
-                try:
-                    source_info = doc.metadata.get("source", "unknown")
-                    self.logger.debug(f"Re-ranking document {idx+1}/{len(docs)} from source '{source_info}'")
+            try:
+                # Batch all re-ranking calls using async execution
+                import asyncio
 
-                    # Invoke the re-ranker chain for this document-question pair
-                    score_result: RerankScore = self.document_reranker_chain.invoke(
-                        {"question": question, "document_content": doc.page_content}
-                    )
+                async def score_document(idx: int, doc: Document) -> Tuple[int, Document, float]:
+                    """Score a single document asynchronously."""
+                    try:
+                        source_info = doc.metadata.get("source", "unknown")
+                        self.logger.debug(f"Re-ranking document {idx+1}/{len(docs)} from source '{source_info}'")
 
-                    # Store the document along with its relevance score
-                    docs_with_scores.append((doc, score_result.relevance_score))
-                    self.logger.debug(f"Document {idx+1} scored: {score_result.relevance_score}")
+                        # Use ainvoke for async execution if available, fallback to invoke
+                        if hasattr(self.document_reranker_chain, 'ainvoke'):
+                            score_result: RerankScore = await self.document_reranker_chain.ainvoke(
+                                {"question": question, "document_content": doc.page_content}
+                            )
+                        else:
+                            # Fallback to sync invoke (wrapped in async)
+                            score_result: RerankScore = self.document_reranker_chain.invoke(
+                                {"question": question, "document_content": doc.page_content}
+                            )
 
-                except Exception as doc_error:
-                    # If scoring a single document fails, log it and assign a low score
-                    source_info = doc.metadata.get("source", "unknown")
+                        self.logger.debug(f"Document {idx+1} scored: {score_result.relevance_score}")
+                        return idx, doc, score_result.relevance_score
 
-                    error_msg = f"Error re-ranking document {idx+1} (source: {source_info}): {doc_error}"
-                    self.logger.error(error_msg, exc_info=True)
+                    except Exception as doc_error:
+                        source_info = doc.metadata.get("source", "unknown")
+                        error_msg = f"Error re-ranking document {idx+1} (source: {source_info}): {doc_error}"
+                        self.logger.error(error_msg, exc_info=True)
+                        return idx, doc, 0.0
 
-                    # Assign score 0.0 for failed documents
-                    docs_with_scores.append((doc, 0.0))
+                # Execute all scoring tasks in parallel
+                tasks = [score_document(idx, doc) for idx, doc in enumerate(docs)]
+                results = asyncio.run(asyncio.gather(*tasks))
+
+                # Convert results to docs_with_scores
+                docs_with_scores = [(doc, score) for _, doc, score in results]
+
+            except Exception as batch_error:
+                # Fallback to sequential processing if batch fails
+                self.logger.warning(f"Batch re-ranking failed, falling back to sequential: {batch_error}")
+                for idx, doc in enumerate(docs):
+                    try:
+                        score_result: RerankScore = self.document_reranker_chain.invoke(
+                            {"question": question, "document_content": doc.page_content}
+                        )
+                        docs_with_scores.append((doc, score_result.relevance_score))
+                    except Exception:
+                        docs_with_scores.append((doc, 0.0))
 
             # Sort Documents by Score
             try:
@@ -2083,24 +2108,55 @@ class CoreRAGEngine:
             state["context"] = "No documents were retrieved to grade."
             return state
 
+        # OPTIMIZED: Batch process document grading to avoid N+1 queries
         relevant_docs: List[Document] = []
-        for idx, doc in enumerate(docs):
-            src = doc.metadata.get("source", "unknown")
-            self.logger.debug(f"Grading doc {idx+1}/{len(docs)} from source '{src}'")
-            try:
-                grade: RelevanceGrade = self.document_relevance_grader_chain.invoke(
-                    {"question": question, "document_content": doc.page_content}
-                )
-                self.logger.debug(f"Doc {idx+1} graded: is_relevant={grade.is_relevant}, justification={grade.justification}")
-                if grade.is_relevant:
-                    doc.metadata["relevance_grade_justification"] = grade.justification
-                    relevant_docs.append(doc)
-            except Exception as e:
-                self.logger.error(
-                    f"Error grading document {idx+1} (source: {src}): {e}",
-                    exc_info=True,
-                )
-                continue
+
+        try:
+            import asyncio
+
+            async def grade_document(idx: int, doc: Document) -> Tuple[int, Document, bool]:
+                """Grade a single document asynchronously."""
+                src = doc.metadata.get("source", "unknown")
+                self.logger.debug(f"Grading doc {idx+1}/{len(docs)} from source '{src}'")
+                try:
+                    # Use ainvoke for async execution if available
+                    if hasattr(self.document_relevance_grader_chain, 'ainvoke'):
+                        grade: RelevanceGrade = await self.document_relevance_grader_chain.ainvoke(
+                            {"question": question, "document_content": doc.page_content}
+                        )
+                    else:
+                        grade: RelevanceGrade = self.document_relevance_grader_chain.invoke(
+                            {"question": question, "document_content": doc.page_content}
+                        )
+
+                    self.logger.debug(f"Doc {idx+1} graded: is_relevant={grade.is_relevant}, justification={grade.justification}")
+                    if grade.is_relevant:
+                        doc.metadata["relevance_grade_justification"] = grade.justification
+                    return idx, doc, grade.is_relevant
+                except Exception as e:
+                    self.logger.error(f"Error grading document {idx+1} (source: {src}): {e}", exc_info=True)
+                    return idx, doc, False
+
+            # Execute all grading tasks in parallel
+            tasks = [grade_document(idx, doc) for idx, doc in enumerate(docs)]
+            results = asyncio.run(asyncio.gather(*tasks))
+
+            # Filter to only relevant documents
+            relevant_docs = [doc for _, doc, is_relevant in results if is_relevant]
+
+        except Exception as batch_error:
+            # Fallback to sequential processing if batch fails
+            self.logger.warning(f"Batch grading failed, falling back to sequential: {batch_error}")
+            for idx, doc in enumerate(docs):
+                try:
+                    grade: RelevanceGrade = self.document_relevance_grader_chain.invoke(
+                        {"question": question, "document_content": doc.page_content}
+                    )
+                    if grade.is_relevant:
+                        doc.metadata["relevance_grade_justification"] = grade.justification
+                        relevant_docs.append(doc)
+                except Exception:
+                    continue
 
         if relevant_docs:
             # Truncate documents if needed
