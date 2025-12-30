@@ -18,6 +18,7 @@ from src.rag.chain_factory import ChainFactory
 from src.rag.error_handler import ErrorHandler
 from src.rag.cache_manager import CacheManager
 from src.rag.document_manager import DocumentManager
+from src.rag.vector_store_manager import VectorStoreManager
 
 __all__ = [
     # Models
@@ -33,6 +34,7 @@ __all__ = [
     "ChainFactory",
     # Managers
     "DocumentManager",
+    "VectorStoreManager",
     # Utilities
     "ErrorHandler",
     "CacheManager",
