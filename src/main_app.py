@@ -1,3 +1,9 @@
+"""
+Adaptive RAG Application with optional MCP enhancement.
+
+MCP features can be enabled/disabled via configuration (src/config.py).
+Set MCP_ENABLE_MCP=true in .env file to enable MCP features.
+"""
 import os
 from typing import List
 import logging
@@ -12,7 +18,15 @@ from src.core_rag_engine import CoreRAGEngine
 from src.stock import fetch_stock_news_documents
 from src.scraper import scrape_urls_as_documents
 from src.loop import AgentLoopWorkflow, AgentLoopState
-from mcp.rag_integration import MCPEnhancedRAG
+from src.config import settings
+
+# Import MCP integration only if enabled
+try:
+    from mcp.rag_integration import MCPEnhancedRAG
+    MCP_AVAILABLE = True
+except ImportError:
+    MCP_AVAILABLE = False
+    logging.warning("MCP integration not available. Running in standard RAG mode.")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,270 +34,299 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()],
 )
 
-# Initialize chat history
+# Initialize session state
 if "qa_chat_history" not in st.session_state:
     st.session_state.qa_chat_history: List[BaseMessage] = []
 
-st.set_page_config(page_title="InsightEngine - Adaptive RAG", layout="wide")
-st.title("InsightEngine – Adaptive RAG")
+if "session_id" not in st.session_state:
+    import uuid
+    st.session_state.session_id = str(uuid.uuid4())
+
+if "mcp_enabled" not in st.session_state:
+    # Read MCP feature flag from config
+    st.session_state.mcp_enabled = settings.mcp.enable_mcp and MCP_AVAILABLE
+
+if "use_conversation_memory" not in st.session_state:
+    st.session_state.use_conversation_memory = st.session_state.mcp_enabled
+
+if "monitoring_active" not in st.session_state:
+    st.session_state.monitoring_active = False
+
+# Dynamic page configuration based on MCP status
+page_title = "InsightEngine - Adaptive RAG"
+if st.session_state.mcp_enabled:
+    page_title += " with MCP 🚀"
+
+st.set_page_config(
+    page_title=page_title,
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Dynamic title
+if st.session_state.mcp_enabled:
+    st.title("InsightEngine – Adaptive RAG with MCP 🚀")
+else:
+    st.title("InsightEngine – Adaptive RAG")
 
 
 @st.cache_resource
-def load_engine():
-    return CoreRAGEngine()
-
-"""
-@st.cache_resource
-def load_engine():
+def load_engine(enable_mcp: bool = False):
+    """Load RAG engine with optional MCP enhancement."""
     core_engine = CoreRAGEngine()
-    mcp_engine = MCPEnhancedRAG(
-        core_rag_engine=core_engine,
-        enable_filesystem=True,
-        enable_memory=True,
-        enable_sql=True
-    )
-    # Initialize MCP servers
-    asyncio.run(mcp_engine.initialize_mcp_servers())
-    return mcp_engine
-"""
 
-engine = load_engine()
+    if enable_mcp and MCP_AVAILABLE:
+        try:
+            mcp_engine = MCPEnhancedRAG(
+                core_rag_engine=core_engine,
+                enable_filesystem=True,
+                enable_memory=True,
+                enable_sql=True
+            )
+            # Initialize MCP servers
+            asyncio.run(mcp_engine.initialize_mcp_servers())
+            st.success("✅ MCP servers initialized successfully!")
+            return mcp_engine
+        except Exception as e:
+            st.warning(f"⚠️ MCP initialization failed: {e}. Using standard RAG.")
+            return core_engine
 
-# Sidebar: Config & Ingest
-st.sidebar.header("Config & Ingest")
-collection_name = st.sidebar.text_input("Collection name", value=engine.default_collection_name)
+    return core_engine
+
+
+engine = load_engine(enable_mcp=st.session_state.mcp_enabled)
+
+# === SIDEBAR: Configuration ===
+st.sidebar.header("⚙️ Configuration")
+
+# MCP Settings (only show if MCP is enabled)
+if st.session_state.mcp_enabled:
+    with st.sidebar.expander("🔌 MCP Settings", expanded=True):
+        mcp_status = "🟢 Active" if hasattr(engine, 'mcp_client') else "🔴 Disabled"
+        st.markdown(f"**Status:** {mcp_status}")
+
+        if hasattr(engine, 'tools'):
+            st.markdown(f"**Tools Available:** {len(engine.tools)}")
+            with st.expander("View MCP Tools"):
+                for tool_name in engine.tools.keys():
+                    st.code(tool_name, language="text")
+
+        st.session_state.use_conversation_memory = st.checkbox(
+            "Use Conversation Memory",
+            value=st.session_state.use_conversation_memory,
+            help="Store and retrieve relevant past conversations"
+        )
+
+    st.sidebar.markdown("---")
+
+# Collection Settings
+st.sidebar.subheader("📚 Collection Settings")
+collection_name = st.sidebar.text_input(
+    "Collection name",
+    value=engine.rag.default_collection_name if hasattr(engine, 'rag') else engine.default_collection_name
+)
 recreate_collection = st.sidebar.checkbox("Recreate collection", value=False)
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("Add Sources")
-uploaded = st.sidebar.file_uploader("PDF files", type="pdf", accept_multiple_files=True)
-urls_text = st.sidebar.text_area("URLs (one per line)", height=150)
 
-if st.sidebar.button("Ingest Documents"):
+# === INGESTION SECTION ===
+st.sidebar.subheader("📥 Add Sources")
+
+# File Upload
+uploaded = st.sidebar.file_uploader(
+    "Upload PDF files",
+    type="pdf",
+    accept_multiple_files=True,
+    help="Upload PDF documents to ingest into the knowledge base"
+)
+
+# URL Input
+urls_text = st.sidebar.text_area(
+    "URLs (one per line)",
+    height=100,
+    help="Enter URLs to scrape and ingest"
+)
+
+# Directory Monitoring (MCP Feature - only show if MCP is enabled)
+if st.session_state.mcp_enabled and hasattr(engine, 'tools') and engine.tools:
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📁 Auto-Ingest (MCP)")
+
+    watch_dir = st.sidebar.text_input(
+        "Watch Directory",
+        value="./documents",
+        help="Monitor this directory for new files"
+    )
+
+    if st.sidebar.button("🔄 Start Auto-Monitoring"):
+        try:
+            async def start_monitoring():
+                await engine.auto_ingest_with_monitoring(
+                    watch_dir=watch_dir,
+                    collection_name=collection_name,
+                    file_types=["pdf", "txt", "md"],
+                    poll_interval=10
+                )
+
+            st.session_state.monitoring_active = True
+            st.sidebar.success(f"Monitoring {watch_dir}...")
+        except Exception as e:
+            st.sidebar.error(f"Failed to start monitoring: {e}")
+
+    if st.sidebar.button("⏹️ Stop Monitoring"):
+        if hasattr(engine, 'monitoring_active'):
+            engine.monitoring_active = False
+        st.session_state.monitoring_active = False
+        st.sidebar.info("Monitoring stopped")
+
+# Ingest Button
+if st.sidebar.button("📤 Ingest Documents", type="primary"):
     sources = []
+
     if uploaded:
         for f in uploaded:
             sources.append({"type": "uploaded_pdf", "value": f})
+
     for line in urls_text.splitlines():
         u = line.strip()
         if u:
             sources.append({"type": "url", "value": u})
+
     if not sources:
         st.sidebar.warning("No sources to ingest.")
     else:
-        try:
-            engine.ingest(
-                sources=sources,
-                collection_name=collection_name,
-                recreate_collection=recreate_collection,
-            )
-            st.sidebar.success("Documents ingested.")
-        except Exception as e:
-            st.sidebar.error(f"Ingestion failed: {e}")
-
-# Stock News Feed
-st.sidebar.markdown("---")
-st.sidebar.subheader("Stock News Feed")
-
-stock_tickers_input = st.sidebar.text_input(
-    "Enter stock tickers (e.g., AAPL, MSFT, NVDA)",
-    help="Comma or space-separated ticker symbols.",
-)
-
-stock_news_collection_name = st.sidebar.text_input(
-    "Collection name for stock news",
-    value="stock_news",
-    help="Where stock news will be stored.",
-)
-
-recreate_stock_news_collection = st.sidebar.checkbox(
-    "Recreate stock news collection if it exists",
-    value=False,
-    key="recreate_stock_news",
-)
-
-max_articles_stock = st.sidebar.number_input("Max articles per ticker", min_value=1, max_value=20, value=3, step=1)
-
-if st.sidebar.button("Ingest Stock News"):
-    if not stock_tickers_input.strip():
-        st.sidebar.warning("Please enter at least one stock ticker.")
-    else:
-        with st.spinner(f"Fetching & ingesting news for {stock_tickers_input}..."):
+        with st.spinner("Ingesting documents..."):
             try:
-                news_documents = fetch_stock_news_documents(
-                    tickers_input=stock_tickers_input,
-                    max_articles_per_ticker=max_articles_stock,
-                )
-                if news_documents:
-                    engine.ingest(
-                        direct_documents=news_documents,
-                        collection_name=stock_news_collection_name,
-                        recreate_collection=recreate_stock_news_collection,
-                    )
-                    st.sidebar.success(f"Ingested {len(news_documents)} articles into '{stock_news_collection_name}'.")
+                # Use the appropriate engine method
+                if hasattr(engine, 'rag'):
+                    # MCP-enhanced engine
+                    for source in sources:
+                        engine.rag.ingest(
+                            source_type=source["type"],
+                            source_value=source["value"],
+                            collection_name=collection_name,
+                            recreate=recreate_collection,
+                        )
                 else:
-                    st.sidebar.warning(f"No articles found for tickers: {stock_tickers_input}")
+                    # Standard engine
+                    for source in sources:
+                        engine.ingest(
+                            source_type=source["type"],
+                            source_value=source["value"],
+                            collection_name=collection_name,
+                            recreate=recreate_collection,
+                        )
+                st.sidebar.success(f"✅ {len(sources)} document(s) ingested!")
             except Exception as e:
-                st.sidebar.error(f"Error during ingestion: {e}")
+                st.sidebar.error(f"Error: {e}")
+                logging.exception("Ingestion error")
 
-# Web Scraper Feed
-st.sidebar.markdown("---")
-st.sidebar.subheader("Web Scraper Feed 🕸️")
+# === MAIN AREA: Chat Interface ===
+st.markdown("### 💬 Chat with Your Documents")
 
-scraper_urls_input = st.sidebar.text_area(
-    "Enter URLs to scrape (one per line)",
-    height=150,
-    key="scraper_urls_text_area",
-    help="Provide full URLs (e.g., https://example.com/page).",
-)
-
-scraper_goal_input = st.sidebar.text_input(
-    "Optional: Goal for scraping (e.g., 'extract product reviews')",
-    key="scraper_goal_text_input",
-    help="This goal will be stored as metadata.",
-)
-
-scraper_collection_name = st.sidebar.text_input(
-    "Collection name for scraped content",
-    value="scraped_content",
-    key="scraper_collection_text_input",
-    help="Scraped content will be stored in this collection.",
-)
-
-recreate_scraper_collection = st.sidebar.checkbox(
-    "Recreate scraped content collection if it exists",
-    value=False,
-    key="recreate_scraper_collection_checkbox",
-)
-
-if st.sidebar.button("Ingest Scraped Content"):
-    urls_to_scrape = [url.strip() for url in scraper_urls_input.splitlines() if url.strip().lower().startswith("http")]
-    if not urls_to_scrape:
-        st.sidebar.warning("Please enter at least one valid URL to scrape (must start with http/https).")
-    else:
-        user_goal = scraper_goal_input.strip() or None
-        with st.spinner(f"Scraping & ingesting {len(urls_to_scrape)} URL(s)..."):
-            try:
-                scraped_documents = scrape_urls_as_documents(urls=urls_to_scrape, user_goal_for_scraping=user_goal)
-                if scraped_documents:
-                    engine.ingest(
-                        direct_documents=scraped_documents,
-                        collection_name=scraper_collection_name,
-                        recreate_collection=recreate_scraper_collection,
-                    )
-                    st.sidebar.success(
-                        f"Ingested content from {len(scraped_documents)} URL(s) " f"into '{scraper_collection_name}'."
-                    )
-                else:
-                    st.sidebar.warning(f"No content scraped from provided URLs: {urls_to_scrape}")
-            except Exception as e:
-                st.sidebar.error(f"Error during scraping or ingestion: {e}")
-
-st.header("Query the Collection")
-
-# show past messages
-for msg in st.session_state.qa_chat_history:
-    if isinstance(msg, HumanMessage):
-        with st.chat_message("user"):
-            st.markdown(msg.content)
-    elif isinstance(msg, AIMessage):
-        with st.chat_message("assistant"):
-            st.markdown(msg.content)
-
-# current question input
-question = st.text_input("Your question here:", key="qa_question_input_box")
-
-if st.button("Get Answer"):
-    if not question.strip():
-        st.warning("Please enter a question.")
-    else:
-        current_q = question.strip()
-        with st.spinner("Generating adaptive answer..."):
-            try:
-                resp = engine.run_full_rag_workflow_sync(
-                    question=current_q,
-                    collection_name=collection_name,
-                    chat_history=st.session_state.qa_chat_history,
-                )
-                ai_ans = resp.get("answer", "Sorry, no answer.")
-
-                st.session_state.qa_chat_history.append(HumanMessage(content=current_q))
-                st.session_state.qa_chat_history.append(AIMessage(content=ai_ans))
-
-            except Exception as e:
-                st.session_state.qa_chat_history.append(HumanMessage(content=current_q))
-                st.session_state.qa_chat_history.append(AIMessage(content=f"Error processing request: {e}"))
-                st.error(f"Error: {e}")
-
+# Display session info
+col1, col2, col3 = st.columns([2, 2, 1])
+with col1:
+    st.caption(f"Session ID: `{st.session_state.session_id[:8]}...`")
+with col2:
+    st.caption(f"Collection: `{collection_name}`")
+with col3:
+    if st.button("🗑️ Clear History"):
+        st.session_state.qa_chat_history = []
         st.rerun()
 
-# Insight Agent (Advanced Tasks)
-st.markdown("---")
-st.header("🔬 Insight Agent (Advanced Tasks)")
+# Chat history display
+chat_container = st.container()
+with chat_container:
+    for msg in st.session_state.qa_chat_history:
+        if isinstance(msg, HumanMessage):
+            with st.chat_message("user"):
+                st.write(msg.content)
+        elif isinstance(msg, AIMessage):
+            with st.chat_message("assistant"):
+                st.write(msg.content)
 
-agent_goal_input = st.text_area(
-    "Describe your complex task or high-level goal for the Insight Agent:",
-    height=150,
-    key="agent_goal_text_area",
-    help=(
-        "Example: 'Fetch the latest news for MSFT, ingest it into a new collection named "
-        "'msft_daily_news', then summarize the top 3 positive developments.'"
-    ),
-)
+# Chat input
+if prompt := st.chat_input("Ask a question about your documents..."):
+    # Add user message
+    st.session_state.qa_chat_history.append(HumanMessage(content=prompt))
 
-if st.button("Execute Agent Task"):
-    if not agent_goal_input.strip():
-        st.warning("Please describe a task or goal for the Insight Agent.")
-    else:
-        if not engine:
-            st.error("CoreRAGEngine is not loaded. Cannot run agent.")
-            st.stop()
-        agent_api_key = os.getenv("OPENAI_API_KEY")
-        if not agent_api_key:
-            st.error("OPENAI_API_KEY is required for the Insight Agent. Set it in your .env.")
-            st.stop()
+    with st.chat_message("user"):
+        st.write(prompt)
 
-        with st.spinner("Insight Agent is planning and executing..."):
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
             try:
-                insight_agent = AgentLoopWorkflow(
-                    openai_api_key=agent_api_key,
-                    model="gpt-4o",
-                    core_rag_engine_instance=engine,
-                    enable_tavily_search=True,
-                    enable_python_repl=False,
+                # Use MCP-enhanced RAG with memory if available
+                if (st.session_state.mcp_enabled and
+                    hasattr(engine, 'rag_with_memory') and
+                    st.session_state.use_conversation_memory):
+
+                    result = asyncio.run(engine.rag_with_memory(
+                        question=prompt,
+                        session_id=st.session_state.session_id,
+                        collection_name=collection_name,
+                        use_memory_context=True,
+                        store_conversation=True,
+                        use_embeddings=True
+                    ))
+
+                    # Display answer
+                    st.write(result.get("answer", "No answer generated."))
+
+                    # Show memory context if used
+                    if result.get("memory_context_used"):
+                        with st.expander(f"📝 Used {result.get('memories_retrieved', 0)} past conversations"):
+                            st.info("This answer incorporates relevant conversation history")
+
+                else:
+                    # Standard RAG
+                    rag_engine = engine.rag if hasattr(engine, 'rag') else engine
+                    result = rag_engine.answer_query(
+                        question=prompt,
+                        collection_name=collection_name,
+                        chat_history=st.session_state.qa_chat_history[:-1]
+                    )
+                    st.write(result.get("answer", "No answer generated."))
+
+                # Display sources
+                if "sources" in result and result["sources"]:
+                    with st.expander(f"📚 Sources ({len(result['sources'])})"):
+                        for i, src in enumerate(result["sources"], 1):
+                            if isinstance(src, dict):
+                                st.markdown(f"**{i}.** {src.get('source', 'Unknown')}")
+                                st.caption(src.get('preview', '')[:200] + "...")
+                            else:
+                                st.markdown(f"**{i}.** {src}")
+
+                # Add assistant response to history
+                st.session_state.qa_chat_history.append(
+                    AIMessage(content=result.get("answer", ""))
                 )
-                final_state: AgentLoopState = insight_agent.run_workflow(goal=agent_goal_input.strip())
-
-                st.subheader("Agent Execution Log & Results")
-                steps = final_state.get("past_steps", [])
-                if steps:
-                    with st.expander("Show Agent's Steps", expanded=False):
-                        for i, (action, obs) in enumerate(steps, 1):
-                            st.markdown(f"**Step {i}:**")
-                            if hasattr(action, "tool") and hasattr(action, "tool_input"):
-                                st.markdown(f"Tool: `{action.tool}`")
-                                st.code(
-                                    json.dumps(action.tool_input, indent=2),
-                                    language="json",
-                                )
-                            st.markdown("**Output:**")
-                            st.write(obs)
-                            st.markdown("---")
-                else:
-                    st.info("No intermediate tool calls were logged.")
-
-                st.markdown("---")
-                st.subheader("Agent's Final Output")
-                outcome = final_state.get("agent_outcome")
-                if isinstance(outcome, AgentFinish):
-                    st.success("Agent Task Completed!")
-                    st.markdown(outcome.return_values.get("output", ""))
-                elif isinstance(outcome, AgentAction):
-                    st.warning("Agent stopped at an action (expected to finish).")
-                    st.code(str(outcome), language="json")
-                else:
-                    st.info("Agent finished without a clear outcome.")
 
             except Exception as e:
-                st.error(f"Error running Insight Agent: {e}")
-                logging.exception("Insight Agent execution error")
+                st.error(f"Error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+
+# === FOOTER: Statistics ===
+st.markdown("---")
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.metric("Conversations", len([m for m in st.session_state.qa_chat_history if isinstance(m, HumanMessage)]))
+
+with col2:
+    if hasattr(engine, 'rag'):
+        stats = engine.rag.get_cache_stats()
+        st.metric("Cached Collections", stats.get("cached_collections", 0))
+    else:
+        stats = engine.get_cache_stats()
+        st.metric("Cached Collections", stats.get("cached_collections", 0))
+
+with col3:
+    if st.session_state.mcp_enabled:
+        mcp_status = "Active" if hasattr(engine, 'mcp_client') else "Disabled"
+        st.metric("MCP Status", mcp_status)
+    else:
+        st.metric("MCP Status", "Disabled")
