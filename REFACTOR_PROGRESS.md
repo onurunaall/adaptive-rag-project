@@ -11,7 +11,7 @@
 | Phase | Status | Progress | Files Affected |
 |-------|--------|----------|----------------|
 | **Planning** | ✅ Complete | 100% | REFACTORING_PLAN.md |
-| **Phase 1: Core Engine** | ⚙️ In Progress | 29% (2/7 modules) | core_rag_engine.py → 7 modules |
+| **Phase 1: Core Engine** | ⚙️ In Progress | 57% (4/7 modules) | core_rag_engine.py → 7 modules |
 | **Phase 2: Streamlit Merge** | ⏸️ Pending | 0% | main_app.py, main_app_mcp_enhanced.py |
 | **Phase 3: Cleanup** | ⏸️ Pending | 0% | Multiple files |
 | **Phase 4: Tests** | ⏸️ Pending | 0% | tests/ |
@@ -38,15 +38,17 @@
   - Status: ✅ Complete (Commit: 962f043)
   - Tests: 30 test cases in test_vector_store_manager.py
 
-- [ ] **1.3 QueryProcessor** (`src/rag/query_processor.py`)
+- [x] **1.3 QueryProcessor** (`src/rag/query_processor.py`)
   - Responsibility: Query analysis and rewriting
-  - Lines: ~200
-  - Status: ⏸️ Not started
+  - Lines: 228 lines
+  - Status: ✅ Complete (Commit: adb56a7)
+  - Tests: 20 test cases in test_query_processor.py
 
-- [ ] **1.4 DocumentGrader** (`src/rag/document_grader.py`)
+- [x] **1.4 DocumentGrader** (`src/rag/document_grader.py`)
   - Responsibility: Document relevance grading and reranking
-  - Lines: ~250
-  - Status: Not started
+  - Lines: 252 lines
+  - Status: ✅ Complete (Commit: 125984c)
+  - Tests: 27 test cases in test_document_grader.py
 
 - [ ] **1.5 AnswerGenerator** (`src/rag/answer_generator.py`)
   - Responsibility: Answer generation and grounding validation
@@ -133,6 +135,10 @@
 | Date | Commit | Description |
 |------|--------|-------------|
 | 2025-12-30 | `fe1c6d9` | docs: Add comprehensive refactoring plan for codebase cleanup |
+| 2025-12-30 | `c3e5cde` | refactor: Extract DocumentManager from CoreRAGEngine (Phase 1.1) |
+| 2025-12-30 | `962f043` | refactor: Extract VectorStoreManager from CoreRAGEngine (Phase 1.2) |
+| 2025-12-30 | `adb56a7` | refactor: Extract QueryProcessor from CoreRAGEngine (Phase 1.3) |
+| 2025-12-30 | `125984c` | refactor: Extract DocumentGrader from CoreRAGEngine (Phase 1.4) |
 
 ---
 
@@ -160,13 +166,13 @@
 
 ## Next Actions
 
-**Priority 1:** Phase 1.1 - Create DocumentManager
+**Priority 1:** Phase 1.5 - Create AnswerGenerator
 **Blocking:** None
-**Dependencies:** TextSplitterFactory (already exists)
+**Dependencies:** LLMFactory, ChainFactory (already exist)
 
-**To start Phase 1.1:**
-1. Create `src/rag/document_manager.py`
-2. Extract document loading/splitting methods from CoreRAGEngine
+**To start Phase 1.5:**
+1. Create `src/rag/answer_generator.py`
+2. Extract answer generation and grounding validation methods from CoreRAGEngine
 3. Add type hints
 4. Write unit tests
 5. Commit and push
