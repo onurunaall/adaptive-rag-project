@@ -101,6 +101,9 @@ class AgentSettings(BaseSettings):
 class MCPSettings(BaseSettings):
     """MCP Server Configurations with Absolute Paths"""
 
+    # MCP Feature Flag
+    enable_mcp: bool = False  # Disabled by default for backward compatibility
+
     filesystem_command: str = "python"
     memory_command: str = "python"
     sql_command: str = "python"

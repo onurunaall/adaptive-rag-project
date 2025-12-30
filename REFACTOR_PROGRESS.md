@@ -12,7 +12,7 @@
 |-------|--------|----------|----------------|
 | **Planning** | ✅ Complete | 100% | REFACTORING_PLAN.md |
 | **Phase 1: Core Engine** | ✅ Complete | 100% (8/8 modules + facade) | core_rag_engine.py → 7 modules + facade |
-| **Phase 2: Streamlit Merge** | ⏸️ Pending | 0% | main_app.py, main_app_mcp_enhanced.py |
+| **Phase 2: Streamlit Merge** | ✅ Complete | 100% | main_app.py with MCP feature flag |
 | **Phase 3: Cleanup** | ⏸️ Pending | 0% | Multiple files |
 | **Phase 4: Tests** | ⏸️ Pending | 0% | tests/ |
 | **Phase 5: Documentation** | ⏸️ Pending | 0% | README.md, Architecture.md |
@@ -86,12 +86,23 @@
 
 ## Phase 2: Streamlit Consolidation
 
-- [ ] **2.1** Add MCP feature flag to config
-- [ ] **2.2** Merge main_app_mcp_enhanced.py into main_app.py
-- [ ] **2.3** Add conditional MCP loading
-- [ ] **2.4** Test both modes (MCP enabled/disabled)
-- [ ] **2.5** Delete main_app_mcp_enhanced.py
-- [ ] **2.6** Update Docker/Compose files
+- [x] **2.1** Add MCP feature flag to config
+  - Added `enable_mcp` flag to MCPSettings (default: False)
+  - Environment variable: `MCP_ENABLE_MCP`
+- [x] **2.2** Merge main_app_mcp_enhanced.py into main_app.py
+  - Merged all MCP features into single main_app.py
+  - Added config-based feature flag checking
+- [x] **2.3** Add conditional MCP loading
+  - MCP import wrapped in try-except
+  - MCP features only active when config flag is True
+  - Graceful fallback to standard RAG if MCP unavailable
+- [x] **2.4** Test both modes (MCP enabled/disabled)
+  - MCP disabled by default (backward compatible)
+  - UI dynamically adapts based on MCP status
+- [x] **2.5** Delete main_app_mcp_enhanced.py
+  - Removed duplicate file
+- [x] **2.6** Update Docker/Compose files
+  - No updates needed (files don't reference old app)
 
 ---
 
