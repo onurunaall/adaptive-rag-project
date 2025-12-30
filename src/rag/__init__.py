@@ -23,6 +23,7 @@ from src.rag.query_processor import QueryProcessor
 from src.rag.document_grader import DocumentGrader
 from src.rag.answer_generator import AnswerGenerator
 from src.rag.cache_orchestrator import CacheOrchestrator
+from src.rag.workflow_orchestrator import WorkflowOrchestrator
 
 __all__ = [
     # Models
@@ -47,6 +48,7 @@ __all__ = [
     "AnswerGenerator",
     # Orchestrators
     "CacheOrchestrator",
+    "WorkflowOrchestrator",
     # Utilities
     "ErrorHandler",
     "CacheManager",
