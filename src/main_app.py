@@ -4,21 +4,15 @@ Adaptive RAG Application with optional MCP enhancement.
 MCP features can be enabled/disabled via configuration (src/config.py).
 Set MCP_ENABLE_MCP=true in .env file to enable MCP features.
 """
-import os
-from typing import List
-import logging
-import streamlit as st
-import json
 import asyncio
+import logging
+from typing import List
 
-from langchain_core.agents import AgentFinish, AgentAction
-from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+import streamlit as st
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
-from src.core_rag_engine import CoreRAGEngine
-from src.stock import fetch_stock_news_documents
-from src.scraper import scrape_urls_as_documents
-from src.loop import AgentLoopWorkflow, AgentLoopState
 from src.config import settings
+from src.core_rag_engine import CoreRAGEngine
 
 # Import MCP integration only if enabled
 try:
