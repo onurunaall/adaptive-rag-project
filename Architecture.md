@@ -1,23 +1,30 @@
 # Adaptive RAG Engine - Architecture Documentation
 
+**Version:** 2.0 (Post-Refactoring)
+**Last Updated:** 2025-12-30
+**Status:** Production-Ready
+
 ## Table of Contents
 
 1. [System Overview](#system-overview)
-2. [Core Components](#core-components)
-3. [Data Flow](#data-flow)
-4. [LangGraph Workflow](#langgraph-workflow)
-5. [Storage Architecture](#storage-architecture)
-6. [LLM Integration](#llm-integration)
-7. [Caching Strategy](#caching-strategy)
-8. [Error Handling](#error-handling)
-9. [Performance Considerations](#performance-considerations)
-10. [Security](#security)
+2. [Refactored Architecture](#refactored-architecture)
+3. [Core Modules](#core-modules)
+4. [CoreRAGEngine (Facade)](#coreragengine-facade)
+5. [Data Flow](#data-flow)
+6. [LangGraph Workflow](#langgraph-workflow)
+7. [Storage Architecture](#storage-architecture)
+8. [LLM Integration](#llm-integration)
+9. [Caching Strategy](#caching-strategy)
+10. [MCP Integration (Optional)](#mcp-integration-optional)
+11. [Error Handling](#error-handling)
+12. [Performance Considerations](#performance-considerations)
+13. [Security](#security)
 
 ---
 
 ## System Overview
 
-The Adaptive RAG Engine is built on a modular, extensible architecture that separates concerns while maintaining high cohesion within each component.
+The Adaptive RAG Engine follows a **modular, facade-based architecture** that separates concerns into specialized modules while maintaining a simple public API. The system has been refactored from a monolithic 2,976-line class into 7 specialized modules orchestrated by a lightweight facade.
 
 ### High-Level Architecture
 
@@ -33,9 +40,12 @@ The Adaptive RAG Engine is built on a modular, extensible architecture that sepa
 ┌───────────▼──────────────────────▼────────────────────▼──────────────┐
 │                         Application Layer                            │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │              CoreRAGEngine (Orchestrator)                    │   │
-│  │  • Query Processing   • Workflow Management                  │   │
-│  │  • State Management   • Error Handling                       │   │
+│  │         CoreRAGEngine (Facade Pattern - 1,147 lines)         │   │
+│  │  Delegates to specialized modules:                           │   │
+│  │  • DocumentManager    • VectorStoreManager                   │   │
+│  │  • QueryProcessor     • DocumentGrader                       │   │
+│  │  • AnswerGenerator    • CacheOrchestrator                    │   │
+│  │  • WorkflowOrchestrator                                      │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐ │
@@ -49,341 +59,599 @@ The Adaptive RAG Engine is built on a modular, extensible architecture that sepa
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐ │
 │  │     LLM      │  │    Vector    │  │     Data Feeds           │ │
 │  │  Providers   │  │    Store     │  │  • Stock • Scraper       │ │
+│  │  (Factories) │  │  (ChromaDB)  │  │  • MCP (Optional)        │ │
 │  └──────────────┘  └──────────────┘  └──────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Design Principles
 
-1. **Modularity**: Each component has a single, well-defined responsibility
-2. **Extensibility**: Easy to add new LLM providers, data sources, or processing strategies
-3. **Type Safety**: Full type hints and runtime validation with Pydantic
-4. **Observability**: Comprehensive logging and error tracking
-5. **Performance**: Intelligent caching and async processing
+1. **Single Responsibility**: Each module has one clear purpose
+2. **Facade Pattern**: CoreRAGEngine provides simple API, delegates to modules
+3. **Modularity**: 7 specialized modules (2,315 lines) replace monolith
+4. **Extensibility**: Easy to add new features or swap implementations
+5. **Type Safety**: Full type hints and runtime validation with Pydantic
+6. **Observability**: Comprehensive logging and error tracking
+7. **Performance**: Intelligent caching and async processing
+8. **Testability**: 184 unit tests across all modules
 
 ---
 
-## Core Components
+## Refactored Architecture
 
-### 1. CoreRAGEngine (`src/core_rag_engine.py`)
+### Before Refactoring (v1.0)
 
-The central orchestrator that coordinates all RAG operations.
+```
+CoreRAGEngine (2,976 lines - God Class)
+├── Document Loading & Splitting (200 lines)
+├── Vector Store Management (400 lines)
+├── Query Processing (200 lines)
+├── Document Grading (250 lines)
+├── Answer Generation (400 lines)
+├── Cache Management (200 lines)
+├── Workflow Orchestration (500 lines)
+└── Public API Methods (300 lines)
+```
 
-**Responsibilities:**
-- Workflow orchestration using LangGraph
-- Query analysis and optimization
-- Document retrieval and grading
-- Answer generation and validation
-- State management
+**Problems:**
+- ❌ Single 2,976-line class (god class anti-pattern)
+- ❌ Multiple responsibilities violating SRP
+- ❌ Hard to test individual components
+- ❌ Difficult to understand and maintain
+- ❌ Tight coupling between components
+
+### After Refactoring (v2.0)
+
+```
+CoreRAGEngine (1,147 lines - Facade)
+├── Delegates to DocumentManager (342 lines)
+├── Delegates to VectorStoreManager (449 lines)
+├── Delegates to QueryProcessor (228 lines)
+├── Delegates to DocumentGrader (252 lines)
+├── Delegates to AnswerGenerator (383 lines)
+├── Delegates to CacheOrchestrator (326 lines)
+└── Delegates to WorkflowOrchestrator (335 lines)
+```
+
+**Benefits:**
+- ✅ 61% code reduction in CoreRAGEngine (2,976 → 1,147 lines)
+- ✅ Each module has single responsibility
+- ✅ 184 comprehensive unit tests
+- ✅ Easy to test, understand, and maintain
+- ✅ Loose coupling via callback patterns
+- ✅ 100% backward API compatibility
+
+---
+
+## Core Modules
+
+### 1. DocumentManager (`src/rag/document_manager.py`)
+
+**Responsibility:** Document loading and splitting operations
+
+**Lines:** 342
+**Tests:** 14 test cases
 
 **Key Methods:**
 ```python
-class CoreRAGEngine:
-    def __init__(self, **config):
-        """Initialize with configuration."""
-        
-    async def run_full_rag_workflow(self, question: str, **kwargs) -> dict:
-        """Execute the complete RAG pipeline."""
-        
-    def ingest(self, **sources) -> None:
-        """Ingest documents into vector store."""
-        
-    def _retrieve_node(self, state: dict) -> dict:
-        """Retrieve relevant documents."""
-        
-    async def _grounding_check_node(self, state: dict) -> dict:
-        """Validate answer grounding."""
-```
+class DocumentManager:
+    def load_documents(
+        self,
+        source_type: str,
+        source_value: Any
+    ) -> List[Document]:
+        """Load documents from various sources (URL, PDF, text, uploaded)."""
 
-### 2. Configuration Management (`src/config.py`)
-
-Pydantic-based configuration with validation and type safety.
-
-**Configuration Models:**
-```python
-class LLMSettings(BaseSettings):
-    provider: str
-    model_name: str
-    temperature: float
-    max_tokens: int
-
-class EmbeddingSettings(BaseSettings):
-    provider: str
-    model_name: str
-    dimensions: Optional[int]
-
-class EngineSettings(BaseSettings):
-    chunk_size: int
-    chunk_overlap: int
-    chunking_strategy: str
-    enable_hybrid_search: bool
-    max_grounding_attempts: int
-```
-
-### 3. Context Manager (`src/context_manager.py`)
-
-Manages context window limits with intelligent truncation.
-
-**Truncation Strategies:**
-- **Smart**: Prioritizes beginning and end
-- **Balanced**: Evenly distributes across context
-- **Sliding**: Maintains temporal continuity
-
-```python
-class ContextManager:
-    def truncate_context(
+    def split_documents(
         self,
         documents: List[Document],
-        strategy: str = "smart",
-        max_tokens: int = 4000
-    ) -> str:
-        """Intelligently truncate context to fit token limit."""
+        strategy: str = "default"
+    ) -> List[Document]:
+        """Split documents using specified strategy (adaptive, semantic, hybrid)."""
 ```
 
-### 4. Agent Loop (`src/agent_loop.py`)
+**Supported Sources:**
+- URLs (via WebBaseLoader)
+- PDF files (via PyPDFLoader)
+- Text files (via TextLoader)
+- Uploaded files (Streamlit UploadedFile)
 
-Orchestrates multi-step agentic workflows for complex tasks.
+**Splitting Strategies:**
+- `default`: RecursiveCharacterTextSplitter
+- `adaptive`: AdaptiveChunker (content-type aware)
+- `semantic`: Semantic chunking based on embeddings
+- `hybrid`: HybridChunker combining multiple strategies
 
+---
+
+### 2. VectorStoreManager (`src/rag/vector_store_manager.py`)
+
+**Responsibility:** Vector store initialization, persistence, and retrieval
+
+**Lines:** 449
+**Tests:** 30 test cases
+
+**Key Methods:**
 ```python
-class AgentLoop:
-    async def plan_and_execute(
+class VectorStoreManager:
+    def init_or_load_vectorstore(
         self,
-        task: str,
-        tools: List[Tool]
-    ) -> AgentResult:
-        """Plan and execute multi-step tasks."""
+        collection_name: str,
+        recreate: bool = False
+    ):
+        """Initialize or load vectorstore from disk."""
+
+    def index_documents(
+        self,
+        documents: List[Document],
+        collection_name: str,
+        recreate: bool = False
+    ):
+        """Index documents into collection."""
+
+    def setup_retriever_for_collection(self, collection_name: str):
+        """Setup retriever (standard or hybrid) for collection."""
+
+    def list_collections(self) -> List[str]:
+        """List all available collections."""
+
+    def delete_collection(self, collection_name: str) -> bool:
+        """Delete a collection."""
 ```
 
-### 5. Data Feeds
+**Features:**
+- Persistent storage with ChromaDB
+- Hybrid search support (vector + BM25/TF-IDF)
+- Memory-efficient document streaming
+- Collection management (list, delete, recreate)
+- Cache invalidation callbacks
 
-#### Stock Feed (`src/stock_feed.py`)
-Fetches financial data for analysis.
+---
 
+### 3. QueryProcessor (`src/rag/query_processor.py`)
+
+**Responsibility:** Query analysis and rewriting operations
+
+**Lines:** 228
+**Tests:** 20 test cases
+
+**Key Methods:**
 ```python
-def fetch_stock_news_as_documents(
-    tickers: List[str],
-    days_back: int = 7
-) -> List[Document]:
-    """Fetch stock news as documents."""
+class QueryProcessor:
+    def analyze_query(
+        self,
+        question: str,
+        chat_history: Optional[List] = None
+    ) -> Optional[QueryAnalysis]:
+        """Analyze query to determine type, intent, key terms."""
+
+    def rewrite_query(
+        self,
+        question: str,
+        chat_history: Optional[List] = None
+    ) -> str:
+        """Rewrite query to be clear, specific, self-contained."""
+
+    def should_use_web_search(
+        self,
+        query_analysis: Optional[QueryAnalysis]
+    ) -> bool:
+        """Determine if web search should be used."""
 ```
 
-#### Scraper Feed (`src/scraper_feed.py`)
-Web scraping for document ingestion.
+**Query Types:**
+- `factual_lookup`: Specific facts or definitions
+- `comparison`: Comparing multiple items
+- `summary_request`: Summaries or overviews
+- `complex_reasoning`: Multi-step reasoning
+- `ambiguous`: Unclear questions
+- `keyword_search_sufficient`: Simple lookups
+- `greeting`: Casual greetings
+- `not_a_question`: Statements or commands
+
+---
+
+### 4. DocumentGrader (`src/rag/document_grader.py`)
+
+**Responsibility:** Document relevance grading and reranking
+
+**Lines:** 252
+**Tests:** 27 test cases
+
+**Key Methods:**
+```python
+class DocumentGrader:
+    def grade_documents(
+        self,
+        documents: List[Document],
+        question: str
+    ) -> List[Document]:
+        """Grade documents for relevance and filter out irrelevant ones."""
+
+    def rerank_documents(
+        self,
+        documents: List[Document],
+        question: str
+    ) -> List[Document]:
+        """Rerank documents by relevance scores (highest first)."""
+
+    def calculate_relevance_score(
+        self,
+        document: Document,
+        question: str
+    ) -> float:
+        """Calculate relevance score for single document (0.0-1.0)."""
+
+    def is_relevant(
+        self,
+        document: Document,
+        question: str
+    ) -> bool:
+        """Boolean relevance check."""
+```
+
+**Features:**
+- LLM-based relevance grading
+- Score-based reranking
+- Parallel document processing
+- Relevance threshold filtering
+
+---
+
+### 5. AnswerGenerator (`src/rag/answer_generator.py`)
+
+**Responsibility:** Answer generation and grounding validation
+
+**Lines:** 383
+**Tests:** 30 test cases
+
+**Key Methods:**
+```python
+class AnswerGenerator:
+    def generate_answer(
+        self,
+        question: str,
+        context: str,
+        chat_history: Optional[List] = None,
+        regeneration_feedback: Optional[str] = None
+    ) -> str:
+        """Generate answer from context with chat history support."""
+
+    def check_grounding(
+        self,
+        context: str,
+        generation: str
+    ) -> Optional[GroundingCheck]:
+        """Check if generated answer is grounded in context."""
+
+    def generate_basic_feedback(
+        self,
+        grounding_result: GroundingCheck,
+        question: str
+    ) -> str:
+        """Generate feedback for basic grounding failures."""
+
+    def generate_advanced_feedback(
+        self,
+        advanced_results: Dict,
+        question: str
+    ) -> str:
+        """Generate detailed feedback from advanced grounding analysis."""
+
+    def format_context(self, documents: List[Any]) -> str:
+        """Format documents into context string."""
+```
+
+**Features:**
+- RAG-based answer generation
+- Chat history integration
+- Grounding validation
+- Hallucination detection
+- Iterative refinement with feedback
+- Context formatting
+
+---
+
+### 6. CacheOrchestrator (`src/rag/cache_orchestrator.py`)
+
+**Responsibility:** Cache management coordination
+
+**Lines:** 326
+**Tests:** 35 test cases
+
+**Key Methods:**
+```python
+class CacheOrchestrator:
+    def cache_documents(
+        self,
+        collection_name: str,
+        documents: List[Any]
+    ):
+        """Cache documents for collection."""
+
+    def get_cached_documents(
+        self,
+        collection_name: str
+    ) -> Optional[List[Any]]:
+        """Get cached documents with TTL check."""
+
+    def maintain_cache(
+        self,
+        max_cache_size_mb: Optional[float] = None
+    ):
+        """Remove old entries if memory usage exceeds limit."""
+
+    def clear_document_cache(
+        self,
+        collection_name: Optional[str] = None
+    ):
+        """Clear cache for specific collection or all."""
+
+    def invalidate_collection_cache(self, collection_name: str):
+        """Invalidate cache for specific collection."""
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get cache statistics."""
+```
+
+**Features:**
+- TTL-based cache expiration (default: 5 minutes)
+- Memory-based eviction (default: 500 MB)
+- Per-collection caching
+- Cache statistics tracking
+- Automatic garbage collection
+
+---
+
+### 7. WorkflowOrchestrator (`src/rag/workflow_orchestrator.py`)
+
+**Responsibility:** LangGraph workflow orchestration for RAG pipeline
+
+**Lines:** 335
+**Tests:** 28 test cases
+
+**Key Methods:**
+```python
+class WorkflowOrchestrator:
+    def compile_workflow(
+        self,
+        entry_point: str = "analyze_query",
+        edges: Optional[List] = None,
+        conditional_edges: Optional[List] = None
+    ):
+        """Compile RAG workflow graph."""
+
+    def compile_default_rag_workflow(self):
+        """Compile default RAG workflow with standard structure."""
+
+    def invoke_workflow(
+        self,
+        initial_state: CoreGraphState
+    ) -> CoreGraphState:
+        """Invoke workflow synchronously."""
+
+    async def ainvoke_workflow(
+        self,
+        initial_state: CoreGraphState
+    ) -> CoreGraphState:
+        """Invoke workflow asynchronously."""
+```
+
+**Workflow Nodes:**
+- `analyze_query`: Analyze query characteristics
+- `rewrite_query`: Rewrite query for better retrieval
+- `retrieve`: Retrieve documents from vector store
+- `grade_documents`: Grade documents for relevance
+- `rerank_documents`: Rerank by relevance scores
+- `generate_answer`: Generate answer from context
+- `grounding_check`: Validate answer grounding
+- `web_search`: Fallback to web search
+- `increment_retries`: Track retry attempts
+
+**Workflow Edges:**
+- Conditional routing based on relevance checks
+- Conditional routing based on grounding checks
+- Retry logic with max attempts
+- Fallback to web search when needed
+
+---
+
+## CoreRAGEngine (Facade)
+
+**File:** `src/core_rag_engine.py`
+**Lines:** 1,147 (reduced from 2,976)
+**Pattern:** Facade
+
+### Role
+
+CoreRAGEngine serves as a **facade** that provides a simple, unified interface while delegating actual work to specialized modules. It maintains 100% backward API compatibility.
+
+### Initialization
 
 ```python
-def scrape_urls_as_documents(
-    urls: List[str]
-) -> List[Document]:
-    """Scrape URLs and convert to documents."""
+def __init__(self, **config):
+    # 1. Configure settings
+    self.llm_provider = llm_provider or app_settings.llm.llm_provider
+    # ... configuration ...
+
+    # 2. Initialize factories
+    self.llm_factory = LLMFactory(...)
+    self.embedding_factory = EmbeddingFactory(...)
+    self.text_splitter_factory = TextSplitterFactory(...)
+
+    # 3. Initialize specialized modules
+    self.document_manager = DocumentManager(...)
+    self.cache_orchestrator = CacheOrchestrator(...)
+    self.vector_store_manager = VectorStoreManager(...)
+    self.query_processor = QueryProcessor(...)
+    self.document_grader = DocumentGrader(...)
+    self.answer_generator = AnswerGenerator(...)
+
+    # 4. Initialize workflow orchestrator
+    self.workflow_orchestrator = WorkflowOrchestrator(
+        node_functions=self._create_node_functions(),
+        routing_functions=self._create_routing_functions()
+    )
+    self.rag_workflow = self.workflow_orchestrator.compile_default_rag_workflow()
+```
+
+### Public API
+
+**Document Ingestion:**
+```python
+def ingest(
+    self,
+    source_type: str,
+    source_value: Any,
+    collection_name: Optional[str] = None,
+    recreate: bool = False,
+    strategy: str = "default"
+) -> Dict[str, Any]:
+    """Delegates to DocumentManager and VectorStoreManager."""
+```
+
+**Query Processing:**
+```python
+def answer_query(
+    self,
+    question: str,
+    collection_name: Optional[str] = None,
+    chat_history: Optional[List[BaseMessage]] = None,
+    stream: bool = False
+) -> Dict[str, Any]:
+    """Delegates to WorkflowOrchestrator."""
+```
+
+**Async Workflow:**
+```python
+async def run_full_rag_workflow(
+    self,
+    question: str,
+    collection_name: Optional[str] = None,
+    chat_history: Optional[List[BaseMessage]] = None
+) -> CoreGraphState:
+    """Delegates to WorkflowOrchestrator (async)."""
+```
+
+**Collection Management:**
+```python
+def list_collections(self) -> List[str]:
+    """Delegates to VectorStoreManager."""
+
+def delete_collection(self, collection_name: str) -> bool:
+    """Delegates to VectorStoreManager."""
+```
+
+**Cache Management:**
+```python
+def clear_document_cache(self, collection_name: Optional[str] = None):
+    """Delegates to CacheOrchestrator."""
+
+def get_cache_stats(self) -> Dict[str, Any]:
+    """Delegates to CacheOrchestrator."""
 ```
 
 ---
 
 ## Data Flow
 
-### Document Ingestion Flow
+### Ingestion Flow
 
 ```
-User Input (Files/URLs/Text)
-    │
-    ▼
-Document Loading
-    │
-    ├─► Format Detection
-    │   (PDF, TXT, MD, HTML, etc.)
-    │
-    ▼
-Adaptive Chunking
-    │
-    ├─► Code Documents → Syntax-aware chunking
-    ├─► Academic Papers → Section-based chunking
-    ├─► Financial Reports → Structure-preserving chunking
-    └─► Default → Fixed-size chunking
-    │
-    ▼
-Embedding Generation
-    │
-    ├─► OpenAI embeddings
-    ├─► Google embeddings
-    └─► Ollama embeddings
-    │
-    ▼
-Vector Store Indexing (ChromaDB)
-    │
-    ├─► Collection Management
-    ├─► Metadata Storage
-    └─► Vector Indexing
-    │
-    ▼
-Cache Population
+User Input (URL/PDF/Text)
+    ↓
+CoreRAGEngine.ingest()
+    ↓
+DocumentManager.load_documents()
+    ↓
+DocumentManager.split_documents()
+    ↓
+VectorStoreManager.index_documents()
+    ↓
+CacheOrchestrator.invalidate_collection_cache()
+    ↓
+ChromaDB (Persistent Storage)
 ```
 
-### Query Processing Flow
+### Query Flow
 
 ```
-User Query
-    │
-    ▼
-Query Analysis
-    │
-    ├─► Query Type Classification
-    │   (Factual, Analytical, Exploratory)
-    ├─► Intent Extraction
-    ├─► Keyword Extraction
-    └─► Ambiguity Detection
-    │
-    ▼
-Query Optimization
-    │
-    ├─► Query Rewriting (if needed)
-    └─► Query Expansion
-    │
-    ▼
-Document Retrieval
-    │
-    ├─► Vector Search
-    │   (Cosine similarity)
-    ├─► Hybrid Search (optional)
-    │   (Vector + Keyword)
-    └─► Fallback to Web Search
-    │
-    ▼
-Document Grading
-    │
-    ├─► Relevance Scoring
-    ├─► Document Filtering
-    └─► Reranking
-    │
-    ▼
-Context Construction
-    │
-    ├─► Context Truncation
-    ├─► Context Formatting
-    └─► Metadata Inclusion
-    │
-    ▼
-Answer Generation
-    │
-    ├─► LLM Invocation
-    ├─► Streaming Response
-    └─► Citation Extraction
-    │
-    ▼
-Grounding Check
-    │
-    ├─► Answer Validation
-    ├─► Hallucination Detection
-    └─► Iterative Refinement
-    │
-    ▼
-Final Answer + Metadata
+User Question
+    ↓
+CoreRAGEngine.answer_query()
+    ↓
+WorkflowOrchestrator.invoke_workflow()
+    ↓
+┌────────────────────────────────────────┐
+│     LangGraph Workflow Execution       │
+│                                        │
+│ 1. QueryProcessor.analyze_query()     │
+│ 2. QueryProcessor.rewrite_query()     │
+│ 3. VectorStoreManager (retrieve)      │
+│ 4. DocumentGrader.grade_documents()   │
+│ 5. DocumentGrader.rerank_documents()  │
+│ 6. AnswerGenerator.generate_answer()  │
+│ 7. AnswerGenerator.check_grounding()  │
+│                                        │
+│ Conditional Routing:                  │
+│ • Relevance failed → Web search       │
+│ • Grounding failed → Regenerate       │
+│ • Max retries → Return answer         │
+└────────────────────────────────────────┘
+    ↓
+Formatted Response
 ```
 
 ---
 
 ## LangGraph Workflow
 
-The RAG pipeline is implemented as a LangGraph state machine.
-
-### State Schema
+### State Machine
 
 ```python
-class RAGState(TypedDict):
-    question: str                    # User's question
-    original_question: str           # Original unmodified question
-    query_analysis_results: Optional[QueryAnalysis]
-    documents: List[Document]        # Retrieved documents
-    context: str                     # Formatted context
-    web_search_results: Optional[List[dict]]
-    generation: str                  # Generated answer
-    retries: int                     # Query rewrite attempts
-    run_web_search: str             # "Yes" or "No"
-    relevance_check_passed: Optional[bool]
-    error_message: Optional[str]
-    grounding_check_attempts: int
+@dataclass
+class CoreGraphState(TypedDict):
+    question: str
+    original_question: str
+    collection_name: str
+    documents: List[Document]
+    context: str
+    generation: str
+    chat_history: List[BaseMessage]
+    query_analysis: Optional[QueryAnalysis]
+    retries: int
+    grounding_attempts: int
+    relevance_check_passed: bool
+    is_grounded: bool
     regeneration_feedback: Optional[str]
-    collection_name: Optional[str]
-    chat_history: List[dict]
 ```
 
 ### Workflow Graph
 
 ```
-START
-  │
-  ▼
-analyze_query ──────► rewrite_query? ◄──┐
-  │                        │             │
-  │                        ▼             │
-  │                  max retries?        │
-  │                        │             │
-  │                   Yes  │  No         │
-  │                        │  │          │
-  │                        │  └──────────┘
-  │                        ▼
-  ▼                      ERROR
-retrieve_documents
-  │
-  ▼
-grade_documents ────► web_search? ──┐
-  │                        │         │
-  ▼                       Yes        │
-rerank_documents           │         │
-  │                        ▼         │
-  ▼                   web_search     │
-generate_answer            │         │
-  │                        │         │
-  └────────────────────────┘         │
-  │                                  │
-  ▼                                  │
-grounding_check ──► regenerate? ────┘
-  │                      │
-  No                    Yes (< max attempts)
-  │
-  ▼
- END
-```
-
-### Node Implementations
-
-**Query Analysis Node:**
-```python
-def _analyze_query_node(self, state: dict) -> dict:
-    """Analyze query to determine retrieval strategy."""
-    analysis = self.query_analyzer_chain.invoke({
-        "question": state["question"]
-    })
-    state["query_analysis_results"] = analysis
-    return state
-```
-
-**Retrieve Node:**
-```python
-def _retrieve_node(self, state: dict) -> dict:
-    """Retrieve relevant documents from vector store."""
-    retriever = self._get_vector_store(collection_name).as_retriever(
-        search_kwargs={"k": self.default_retrieval_top_k}
-    )
-    documents = retriever.get_relevant_documents(state["question"])
-    state["documents"] = documents
-    return state
-```
-
-**Grounding Check Node:**
-```python
-async def _grounding_check_node(self, state: dict) -> dict:
-    """Validate answer against source documents."""
-    check_result = self.grounding_check_chain.invoke({
-        "question": state["question"],
-        "answer": state["generation"],
-        "context": state["context"]
-    })
-    
-    if not check_result.is_grounded:
-        state["regeneration_feedback"] = self._format_feedback(check_result)
-    
-    state["grounding_check_attempts"] += 1
-    return state
+         START
+           ↓
+    analyze_query ────────┐
+           ↓              │
+    rewrite_query         │
+           ↓              │
+       retrieve           │
+           ↓              │
+   grade_documents        │
+           ↓              │
+    [Relevant?] ─NO→ increment_retries
+      YES  ↓              ↓
+   rerank_documents  [Retries<Max?]
+           ↓          YES↓     NO↓
+   generate_answer ←─────┘  web_search
+           ↓                    ↓
+   grounding_check         (rejoin)
+           ↓                    ↓
+    [Grounded?] ────────────────┘
+      YES  ↓  NO
+      END  → [Attempts<Max?]
+                YES↓     NO↓
+           regenerate   END
 ```
 
 ---
@@ -392,146 +660,42 @@ async def _grounding_check_node(self, state: dict) -> dict:
 
 ### Vector Store (ChromaDB)
 
-**Structure:**
-```
-chroma_db/
-├── collection_1/
-│   ├── chroma.sqlite3      # SQLite metadata
-│   ├── index/              # Vector indices
-│   └── data/               # Document data
-├── collection_2/
-│   └── ...
-```
+**Location:** `{persist_directory_base}/core_rag_engine_chroma/{collection_name}/`
 
-**Collection Management:**
-```python
-def _get_vector_store(
-    self,
-    collection_name: str,
-    recreate: bool = False
-) -> Chroma:
-    """Get or create vector store for collection."""
-    
-    if recreate:
-        # Delete existing collection
-        self._delete_collection(collection_name)
-    
-    # Create new vector store
-    vector_store = Chroma(
-        collection_name=collection_name,
-        embedding_function=self.embedding_model,
-        persist_directory=persist_dir
-    )
-    
-    return vector_store
-```
+**Collections:**
+- Each document set stored in separate collection
+- Persistent storage on disk
+- In-memory caching for performance
 
-### Document Schema
-
-```python
-{
-    "page_content": "The actual text content",
-    "metadata": {
-        "source": "document_name.pdf",
-        "page": 5,
-        "chunk_index": 3,
-        "document_type": "academic",
-        "created_at": "2025-01-15T10:30:00Z",
-        "file_hash": "abc123...",
-        # Custom metadata fields
-    }
-}
-```
+**Retrieval Methods:**
+- **Standard:** Pure vector similarity search
+- **Hybrid:** Vector + BM25 keyword search (alpha-weighted)
 
 ---
 
 ## LLM Integration
 
-### Multi-Provider Architecture
+### Factory Pattern
 
 ```python
-class LLMFactory:
-    @staticmethod
-    def create_llm(provider: str, **config) -> BaseChatModel:
-        """Factory method to create LLM instance."""
-        if provider == "openai":
-            return ChatOpenAI(**config)
-        elif provider == "google":
-            return ChatGoogleGenerativeAI(**config)
-        elif provider == "ollama":
-            return ChatOllama(**config)
+# LLMFactory
+llm = llm_factory.create_llm(use_json_format=False)
+json_llm = llm_factory.create_llm(use_json_format=True)
+
+# EmbeddingFactory
+embeddings = embedding_factory.create_embedding_model()
+
+# TextSplitterFactory
+text_splitter = text_splitter_factory.create_text_splitter()
 ```
 
-### Provider-Specific Configuration
+### Supported Providers
 
-**OpenAI:**
-```python
-ChatOpenAI(
-    model_name="gpt-4o",
-    temperature=0.7,
-    max_tokens=2000,
-    streaming=True,
-    api_key=openai_api_key
-)
-```
-
-**Google Gemini:**
-```python
-ChatGoogleGenerativeAI(
-    model="gemini-pro",
-    temperature=0.7,
-    max_output_tokens=2000,
-    google_api_key=google_api_key
-)
-```
-
-**Ollama (Local):**
-```python
-ChatOllama(
-    model="llama2",
-    temperature=0.7,
-    base_url="http://localhost:11434"
-)
-```
-
-### Prompt Engineering
-
-**Query Analysis Prompt:**
-```python
-QUERY_ANALYSIS_PROMPT = """
-Analyze the following user query and classify it:
-
-Query: {question}
-
-Determine:
-1. Query Type: factual_lookup, analytical, exploratory, conversational
-2. Main Intent: What is the user trying to accomplish?
-3. Key Entities: Extract important entities
-4. Ambiguity: Is the query ambiguous?
-
-Respond in JSON format.
-"""
-```
-
-**Answer Generation Prompt:**
-```python
-ANSWER_GENERATION_PROMPT = """
-You are a helpful AI assistant. Answer the question based ONLY on the provided context.
-
-Context:
-{context}
-
-Question: {question}
-
-Instructions:
-- Base your answer strictly on the context provided
-- If the context doesn't contain enough information, say so
-- Cite specific parts of the context when possible
-- Be concise but comprehensive
-
-Answer:
-"""
-```
+| Provider | Models | Use Cases |
+|----------|--------|-----------|
+| **OpenAI** | GPT-4, GPT-4o, GPT-4o-mini | Production, high quality |
+| **Google** | Gemini Pro, Gemini 1.5 Pro | Cost-effective, multimodal |
+| **Ollama** | Llama 2, Mistral, etc. | Local deployment, privacy |
 
 ---
 
@@ -539,199 +703,105 @@ Answer:
 
 ### Multi-Level Caching
 
-```
-┌─────────────────────────────────────────────┐
-│         Application Cache (In-Memory)        │
-│  • Document Cache                            │
-│  • Vector Store Cache                        │
-│  • Query Results Cache                       │
-└──────────────────┬──────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────┐
-│         Vector Store Cache (Disk)            │
-│  • Pre-computed embeddings                   │
-│  • Index cache                               │
-└──────────────────┬──────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────┐
-│      LLM Response Cache (Optional)           │
-│  • Redis/Memcached                           │
-└──────────────────────────────────────────────┘
-```
+1. **Document Cache** (CacheOrchestrator)
+   - TTL: 5 minutes (configurable)
+   - Max Size: 500 MB (configurable)
+   - LRU eviction policy
 
-### Cache Implementation
+2. **Vector Store Cache**
+   - Persistent ChromaDB storage
+   - In-memory index caching
 
-```python
-class CacheManager:
-    def __init__(self, ttl: int, max_size_mb: float):
-        self.document_cache: Dict[str, List[Document]] = {}
-        self.cache_timestamps: Dict[str, float] = {}
-        self.ttl = ttl
-        self.max_size_mb = max_size_mb
-    
-    def get(self, collection_name: str) -> Optional[List[Document]]:
-        """Get documents from cache if valid."""
-        if self._is_valid(collection_name):
-            return self.document_cache.get(collection_name)
-        return None
-    
-    def set(self, collection_name: str, documents: List[Document]):
-        """Cache documents with TTL."""
-        self.document_cache[collection_name] = documents
-        self.cache_timestamps[collection_name] = time.time()
-        self._maintain_cache()
-    
-    def invalidate(self, collection_name: str):
-        """Invalidate specific cache entry."""
-        self.document_cache.pop(collection_name, None)
-        self.cache_timestamps.pop(collection_name, None)
-```
+3. **LLM Response Cache**
+   - Framework-level caching (LangChain)
 
-### Cache Eviction Policy
+### Cache Invalidation
 
-**LRU (Least Recently Used):**
-```python
-def _evict_lru(self):
-    """Evict least recently used cache entries."""
-    sorted_items = sorted(
-        self.cache_timestamps.items(),
-        key=lambda x: x[1]
-    )
-    
-    for collection_name, _ in sorted_items:
-        if self._get_cache_size() <= self.max_size_mb:
-            break
-        self.invalidate(collection_name)
-```
+- Automatic invalidation on document ingestion
+- Manual invalidation via `clear_document_cache()`
+- TTL-based expiration
+- Memory-based eviction
+
+---
+
+## MCP Integration (Optional)
+
+**Feature Flag:** `MCP_ENABLE_MCP` (default: `false`)
+
+### MCP-Enhanced Features
+
+When enabled (`MCP_ENABLE_MCP=true`):
+- Filesystem monitoring for auto-ingestion
+- Conversation memory across sessions
+- SQL database query capabilities
+- Enhanced monitoring and observability
+
+### Graceful Fallback
+
+If MCP initialization fails:
+- Automatically falls back to standard RAG
+- No interruption to user experience
+- Warning logged for troubleshooting
 
 ---
 
 ## Error Handling
 
-### Error Hierarchy
-
-```
-RAGException (Base)
-│
-├── ConfigurationError
-│   ├── MissingAPIKeyError
-│   └── InvalidConfigError
-│
-├── IngestionError
-│   ├── DocumentLoadError
-│   ├── ChunkingError
-│   └── EmbeddingError
-│
-├── RetrievalError
-│   ├── VectorStoreError
-│   └── SearchError
-│
-└── GenerationError
-    ├── LLMError
-    ├── GroundingError
-    └── TimeoutError
-```
-
-### Error Handling Strategy
+### ErrorHandler Module
 
 ```python
-def _handle_node_error(
-    self,
-    state: dict,
-    error: Exception,
-    node_name: str
-) -> dict:
-    """Centralized error handling for workflow nodes."""
-    
-    self.logger.error(
-        f"Error in {node_name}: {str(error)}",
-        exc_info=True
-    )
-    
-    # Append to error message
-    self._append_error(state, f"{node_name}: {str(error)}")
-    
-    # Decide whether to continue or stop
-    if isinstance(error, CriticalError):
-        state["stop_workflow"] = True
-    
-    return state
+class ErrorHandler:
+    def handle_error(
+        self,
+        error: Exception,
+        context: str
+    ) -> Dict[str, Any]:
+        """Centralized error handling with logging."""
 ```
 
-### Graceful Degradation
+### Error Categories
 
-```python
-def _retrieve_with_fallback(self, state: dict) -> dict:
-    """Retrieve with web search fallback."""
-    try:
-        # Try vector store retrieval
-        documents = self._retrieve_from_vector_store(state)
-        
-        if not documents or len(documents) < 2:
-            # Fallback to web search
-            self.logger.info("Falling back to web search")
-            state["run_web_search"] = "Yes"
-            
-    except Exception as e:
-        self.logger.error(f"Retrieval error: {e}")
-        state["run_web_search"] = "Yes"
-    
-    return state
-```
+- **Ingestion Errors**: Document loading/splitting failures
+- **Retrieval Errors**: Vector store query failures
+- **Generation Errors**: LLM API failures
+- **Validation Errors**: Configuration/input validation
+
+### Recovery Strategies
+
+- Automatic retries with exponential backoff
+- Fallback to web search on retrieval failure
+- Graceful degradation on LLM failures
+- Comprehensive error logging
 
 ---
 
 ## Performance Considerations
 
-### Optimization Techniques
+### Optimizations
 
-1. **Batch Processing**
-```python
-def ingest_batch(
-    self,
-    documents: List[Document],
-    batch_size: int = 100
-):
-    """Process documents in batches."""
-    for i in range(0, len(documents), batch_size):
-        batch = documents[i:i + batch_size]
-        self._process_batch(batch)
-```
+1. **Caching**
+   - Multi-level caching reduces redundant operations
+   - TTL-based expiration balances freshness and performance
 
-2. **Async Operations**
-```python
-async def process_multiple_queries(
-    self,
-    queries: List[str]
-) -> List[dict]:
-    """Process multiple queries concurrently."""
-    tasks = [
-        self.run_full_rag_workflow(query)
-        for query in queries
-    ]
-    return await asyncio.gather(*tasks)
-```
+2. **Streaming**
+   - Memory-efficient document loading for large collections
+   - Batch processing with configurable batch sizes
 
-3. **Streaming Responses**
-```python
-def stream_answer(
-    self,
-    question: str
-) -> Generator[str, None, None]:
-    """Stream answer token by token."""
-    for chunk in self.llm.stream(prompt):
-        yield chunk.content
-```
+3. **Parallel Processing**
+   - Concurrent document grading
+   - Async workflow execution
 
-### Performance Metrics
+4. **Hybrid Search**
+   - Optimized for collections up to 50,000 documents
+   - Automatically warned for larger collections
 
-| Metric | Target | Current |
-|--------|--------|---------|
-| Query Latency (p50) | < 2s | 1.8s |
-| Query Latency (p95) | < 5s | 4.2s |
-| Throughput | > 10 qps | 12 qps |
-| Cache Hit Rate | > 70% | 78% |
-| Memory Usage | < 2GB | 1.6GB |
+### Benchmarks
+
+| Operation | Cold Start | Warm Cache |
+|-----------|------------|------------|
+| Document Ingestion (1000 docs) | 45s | N/A |
+| Query Processing | 3-5s | 0.5-1s |
+| Cache Hit | N/A | 50ms |
 
 ---
 
@@ -739,79 +809,53 @@ def stream_answer(
 
 ### API Key Management
 
-```python
-# NEVER hardcode API keys
-# Use environment variables
-api_key = os.getenv("OPENAI_API_KEY")
-
-# Validate before use
-if not api_key:
-    raise ConfigurationError("OPENAI_API_KEY not found")
-
-# Mask in logs
-self.logger.info(f"Using API key: {api_key[:8]}...")
-```
+- Environment variable-based configuration
+- No hardcoded secrets
+- Support for `.env` files
 
 ### Input Validation
 
-```python
-def validate_query(self, query: str) -> str:
-    """Validate and sanitize user query."""
-    # Check length
-    if len(query) > 1000:
-        raise ValueError("Query too long")
-    
-    # Remove malicious patterns
-    query = self._sanitize_input(query)
-    
-    return query
-```
+- Pydantic models for type safety
+- SQL injection prevention
+- Path traversal protection
 
-### SQL Injection Prevention
+### Data Privacy
 
-```python
-def sanitize_identifier(name: str) -> str:
-    """Sanitize SQL identifiers."""
-    if not re.match(r'^[a-zA-Z0-9_]+$', name):
-        raise ValueError("Invalid identifier")
-    return name
-```
+- Local vector store storage
+- No data sent to third parties (except LLM APIs)
+- Optional local LLM deployment (Ollama)
 
 ---
 
-## Future Enhancements
+## Migration from v1.0 to v2.0
 
-### Planned Improvements
+### Breaking Changes
 
-1. **Multi-Modal Support**
-   - Image understanding
-   - Audio transcription
-   - Video analysis
+**None** - 100% backward compatible!
 
-2. **Graph-Based Retrieval**
-   - Knowledge graph integration
-   - Entity relationship mapping
-   - Graph neural networks
+### New Features
 
-3. **Advanced Agentic Workflows**
-   - Multi-agent collaboration
-   - Tool use and function calling
-   - Self-improvement loops
+- Modular architecture with 7 specialized modules
+- 184 comprehensive unit tests
+- MCP integration (optional)
+- Improved error handling
+- Better performance (caching optimizations)
 
-4. **Distributed Architecture**
-   - Horizontal scaling
-   - Load balancing
-   - Distributed caching
+### Deprecated
+
+**None** - All existing APIs preserved
 
 ---
 
 ## References
 
-- [LangChain Documentation](https://python.langchain.com/)
-- [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)
-- [ChromaDB Documentation](https://docs.trychroma.com/)
-- [RAG Research Papers](https://arxiv.org/abs/2005.11401)
+- **LangChain Documentation**: https://python.langchain.com/
+- **LangGraph Documentation**: https://langchain-ai.github.io/langgraph/
+- **ChromaDB Documentation**: https://docs.trychroma.com/
+- **Pydantic Documentation**: https://docs.pydantic.dev/
 
 ---
 
-For questions or suggestions about the architecture, please open an issue on GitHub.
+**Last Updated:** 2025-12-30
+**Version:** 2.0
+**Maintained By:** Adaptive RAG Team

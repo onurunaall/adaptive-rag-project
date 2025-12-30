@@ -113,54 +113,91 @@ Traditional RAG systems use a one-size-fits-all approach. Our engine intelligent
 
 ## 🏗 Architecture
 
+### Modular Facade Pattern (v2.0)
+
+The Adaptive RAG Engine follows a **modular, facade-based architecture** with **7 specialized modules** orchestrated by a lightweight facade.
+
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         User Interface                          │
-│                    (Streamlit / API / CLI)                      │
-└──────────────────────────┬──────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                         Presentation Layer                           │
+│                    (Streamlit / API / CLI)                           │
+└──────────────────────────┬───────────────────────────────────────────┘
                            │
-┌──────────────────────────▼──────────────────────────────────────┐
-│                     CoreRAGEngine                               │
-│  ┌────────────────────────────────────────────────────────┐    │
-│  │              Query Processing Pipeline                 │    │
-│  │  1. Query Analysis  →  2. Query Rewriting            │    │
-│  │  3. Document Retrieval  →  4. Relevance Grading      │    │
-│  └────────────────────────────────────────────────────────┘    │
-└─────────────────┬───────────────────────────┬───────────────────┘
-                  │                           │
-        ┌─────────▼─────────┐       ┌────────▼────────┐
-        │   Vector Store    │       │   LLM Provider   │
-        │    (ChromaDB)     │       │  (Multi-model)   │
-        └─────────┬─────────┘       └────────┬────────┘
-                  │                           │
-        ┌─────────▼─────────────────────────▼────────┐
-        │          Document Processing               │
-        │  • Adaptive Chunking                       │
-        │  • Embedding Generation                    │
-        │  • Metadata Extraction                     │
-        └──────────────────────────────────────────┘
+┌──────────────────────────▼───────────────────────────────────────────┐
+│                CoreRAGEngine (Facade - 1,147 lines)                  │
+│  Delegates to specialized modules:                                   │
+│  ┌────────────────┐  ┌────────────────┐  ┌───────────────────────┐ │
+│  │   Document     │  │  VectorStore   │  │      Query            │ │
+│  │   Manager      │  │   Manager      │  │    Processor          │ │
+│  └────────────────┘  └────────────────┘  └───────────────────────┘ │
+│  ┌────────────────┐  ┌────────────────┐  ┌───────────────────────┐ │
+│  │   Document     │  │    Answer      │  │      Cache            │ │
+│  │    Grader      │  │   Generator    │  │  Orchestrator         │ │
+│  └────────────────┘  └────────────────┘  └───────────────────────┘ │
+│  ┌────────────────────────────────────────────────────────────────┐ │
+│  │            WorkflowOrchestrator (LangGraph)                    │ │
+│  └────────────────────────────────────────────────────────────────┘ │
+└──────────────────────────┬───────────────────────────────────────────┘
+                           │
+        ┌──────────────────┴──────────────────┐
+        │                                     │
+┌───────▼─────────┐                   ┌──────▼──────┐
+│  Vector Store   │                   │ LLM Providers│
+│   (ChromaDB)    │                   │ (Multi-model)│
+└─────────────────┘                   └─────────────┘
 ```
 
-### Component Overview
+### **Refactored Architecture Benefits**
 
-#### 1. **Core RAG Engine** (`src/core_rag_engine.py`)
-The heart of the system, orchestrating the entire RAG workflow using LangGraph state machines.
+| Metric | Before (v1.0) | After (v2.0) | Improvement |
+|--------|---------------|--------------|-------------|
+| **CoreRAGEngine** | 2,976 lines | 1,147 lines | **61% reduction** |
+| **Modularity** | Monolithic | 7 modules | **100% modular** |
+| **Test Coverage** | Limited | 184 tests | **Comprehensive** |
+| **Maintainability** | Low | High | **Easy to modify** |
 
-#### 2. **Configuration Management** (`src/config.py`)
-Centralized configuration with Pydantic models for type safety and validation.
+### Core Modules
 
-#### 3. **Context Manager** (`src/context_manager.py`)
-Intelligent context window management with multiple truncation strategies.
+#### 1. **DocumentManager** (`src/rag/document_manager.py`)
+Document loading and splitting with adaptive strategies (342 lines, 14 tests)
 
-#### 4. **Data Feeds**
+#### 2. **VectorStoreManager** (`src/rag/vector_store_manager.py`)
+Vector store operations and hybrid search (449 lines, 30 tests)
+
+#### 3. **QueryProcessor** (`src/rag/query_processor.py`)
+Query analysis and rewriting (228 lines, 20 tests)
+
+#### 4. **DocumentGrader** (`src/rag/document_grader.py`)
+Relevance grading and reranking (252 lines, 27 tests)
+
+#### 5. **AnswerGenerator** (`src/rag/answer_generator.py`)
+Answer generation and grounding validation (383 lines, 30 tests)
+
+#### 6. **CacheOrchestrator** (`src/rag/cache_orchestrator.py`)
+Intelligent cache management (326 lines, 35 tests)
+
+#### 7. **WorkflowOrchestrator** (`src/rag/workflow_orchestrator.py`)
+LangGraph workflow orchestration (335 lines, 28 tests)
+
+#### 8. **CoreRAGEngine** (`src/core_rag_engine.py`)
+Facade that delegates to all modules (1,147 lines)
+
+### Additional Components
+
+#### 9. **Configuration Management** (`src/config.py`)
+Centralized configuration with Pydantic models and MCP feature flag
+
+#### 10. **Context Manager** (`src/context_manager.py`)
+Intelligent context window management
+
+#### 11. **Data Feeds**
 - `src/stock_feed.py`: Financial data integration
-- `src/scraper_feed.py`: Web scraping capabilities
+- `src/scraper_feed.py`: Web scraping
 
-#### 5. **Agent Loop** (`src/agent_loop.py`)
-Agentic workflows for complex, multi-step tasks.
+#### 12. **User Interface** (`src/main_app.py`)
+Unified Streamlit app with optional MCP enhancement
 
-#### 6. **User Interface** (`src/main_app.py`)
-Production-ready Streamlit interface with real-time streaming.
+**For detailed architecture documentation, see [Architecture.md](./Architecture.md)**
 
 ---
 
