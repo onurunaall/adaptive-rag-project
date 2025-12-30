@@ -20,6 +20,7 @@ from src.rag.cache_manager import CacheManager
 from src.rag.document_manager import DocumentManager
 from src.rag.vector_store_manager import VectorStoreManager
 from src.rag.query_processor import QueryProcessor
+from src.rag.document_grader import DocumentGrader
 
 __all__ = [
     # Models
@@ -38,6 +39,8 @@ __all__ = [
     "VectorStoreManager",
     # Processors
     "QueryProcessor",
+    # Graders
+    "DocumentGrader",
     # Utilities
     "ErrorHandler",
     "CacheManager",
