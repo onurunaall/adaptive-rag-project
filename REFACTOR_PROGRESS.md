@@ -11,7 +11,7 @@
 | Phase | Status | Progress | Files Affected |
 |-------|--------|----------|----------------|
 | **Planning** | ✅ Complete | 100% | REFACTORING_PLAN.md |
-| **Phase 1: Core Engine** | ⚙️ In Progress | 71% (5/7 modules) | core_rag_engine.py → 7 modules |
+| **Phase 1: Core Engine** | ⚙️ In Progress | 86% (6/7 modules) | core_rag_engine.py → 7 modules |
 | **Phase 2: Streamlit Merge** | ⏸️ Pending | 0% | main_app.py, main_app_mcp_enhanced.py |
 | **Phase 3: Cleanup** | ⏸️ Pending | 0% | Multiple files |
 | **Phase 4: Tests** | ⏸️ Pending | 0% | tests/ |
@@ -56,10 +56,11 @@
   - Status: ✅ Complete (Commit: dbb412b)
   - Tests: 30 test cases in test_answer_generator.py
 
-- [ ] **1.6 CacheOrchestrator** (`src/rag/cache_orchestrator.py`)
+- [x] **1.6 CacheOrchestrator** (`src/rag/cache_orchestrator.py`)
   - Responsibility: Cache management coordination
-  - Lines: ~200
-  - Status: Not started
+  - Lines: 326 lines
+  - Status: ✅ Complete (Commit: 9911b16)
+  - Tests: 35 test cases in test_cache_orchestrator.py
 
 - [ ] **1.7 WorkflowOrchestrator** (`src/rag/workflow_orchestrator.py`)
   - Responsibility: LangGraph workflow orchestration
@@ -141,6 +142,7 @@
 | 2025-12-30 | `adb56a7` | refactor: Extract QueryProcessor from CoreRAGEngine (Phase 1.3) |
 | 2025-12-30 | `125984c` | refactor: Extract DocumentGrader from CoreRAGEngine (Phase 1.4) |
 | 2025-12-30 | `dbb412b` | refactor: Extract AnswerGenerator from CoreRAGEngine (Phase 1.5) |
+| 2025-12-30 | `9911b16` | refactor: Extract CacheOrchestrator from CoreRAGEngine (Phase 1.6) |
 
 ---
 
@@ -168,13 +170,13 @@
 
 ## Next Actions
 
-**Priority 1:** Phase 1.6 - Create CacheOrchestrator
+**Priority 1:** Phase 1.7 - Create WorkflowOrchestrator
 **Blocking:** None
-**Dependencies:** CacheManager (already exists)
+**Dependencies:** All previous modules (already exist)
 
-**To start Phase 1.6:**
-1. Create `src/rag/cache_orchestrator.py`
-2. Extract cache coordination methods from CoreRAGEngine
+**To start Phase 1.7:**
+1. Create `src/rag/workflow_orchestrator.py`
+2. Extract LangGraph workflow orchestration methods from CoreRAGEngine
 3. Add type hints
 4. Write unit tests
 5. Commit and push
