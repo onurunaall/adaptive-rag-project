@@ -11,7 +11,7 @@
 | Phase | Status | Progress | Files Affected |
 |-------|--------|----------|----------------|
 | **Planning** | ✅ Complete | 100% | REFACTORING_PLAN.md |
-| **Phase 1: Core Engine** | ⚙️ In Progress | 57% (4/7 modules) | core_rag_engine.py → 7 modules |
+| **Phase 1: Core Engine** | ⚙️ In Progress | 71% (5/7 modules) | core_rag_engine.py → 7 modules |
 | **Phase 2: Streamlit Merge** | ⏸️ Pending | 0% | main_app.py, main_app_mcp_enhanced.py |
 | **Phase 3: Cleanup** | ⏸️ Pending | 0% | Multiple files |
 | **Phase 4: Tests** | ⏸️ Pending | 0% | tests/ |
@@ -50,10 +50,11 @@
   - Status: ✅ Complete (Commit: 125984c)
   - Tests: 27 test cases in test_document_grader.py
 
-- [ ] **1.5 AnswerGenerator** (`src/rag/answer_generator.py`)
+- [x] **1.5 AnswerGenerator** (`src/rag/answer_generator.py`)
   - Responsibility: Answer generation and grounding validation
-  - Lines: ~400
-  - Status: Not started
+  - Lines: 383 lines
+  - Status: ✅ Complete (Commit: dbb412b)
+  - Tests: 30 test cases in test_answer_generator.py
 
 - [ ] **1.6 CacheOrchestrator** (`src/rag/cache_orchestrator.py`)
   - Responsibility: Cache management coordination
@@ -139,6 +140,7 @@
 | 2025-12-30 | `962f043` | refactor: Extract VectorStoreManager from CoreRAGEngine (Phase 1.2) |
 | 2025-12-30 | `adb56a7` | refactor: Extract QueryProcessor from CoreRAGEngine (Phase 1.3) |
 | 2025-12-30 | `125984c` | refactor: Extract DocumentGrader from CoreRAGEngine (Phase 1.4) |
+| 2025-12-30 | `dbb412b` | refactor: Extract AnswerGenerator from CoreRAGEngine (Phase 1.5) |
 
 ---
 
@@ -166,13 +168,13 @@
 
 ## Next Actions
 
-**Priority 1:** Phase 1.5 - Create AnswerGenerator
+**Priority 1:** Phase 1.6 - Create CacheOrchestrator
 **Blocking:** None
-**Dependencies:** LLMFactory, ChainFactory (already exist)
+**Dependencies:** CacheManager (already exists)
 
-**To start Phase 1.5:**
-1. Create `src/rag/answer_generator.py`
-2. Extract answer generation and grounding validation methods from CoreRAGEngine
+**To start Phase 1.6:**
+1. Create `src/rag/cache_orchestrator.py`
+2. Extract cache coordination methods from CoreRAGEngine
 3. Add type hints
 4. Write unit tests
 5. Commit and push
