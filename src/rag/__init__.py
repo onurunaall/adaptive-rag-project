@@ -21,6 +21,7 @@ from src.rag.document_manager import DocumentManager
 from src.rag.vector_store_manager import VectorStoreManager
 from src.rag.query_processor import QueryProcessor
 from src.rag.document_grader import DocumentGrader
+from src.rag.answer_generator import AnswerGenerator
 
 __all__ = [
     # Models
@@ -41,6 +42,8 @@ __all__ = [
     "QueryProcessor",
     # Graders
     "DocumentGrader",
+    # Generators
+    "AnswerGenerator",
     # Utilities
     "ErrorHandler",
     "CacheManager",
