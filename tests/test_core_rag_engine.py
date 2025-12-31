@@ -55,16 +55,21 @@ def rag_engine():
     """
     Initialize a CoreRAGEngine with a temporary persistence directory.
     Cleans up the directory after tests complete.
+    Uses fake API keys for testing when real ones are not available.
     """
     test_dir = "test_chroma_db"
     os.makedirs(test_dir, exist_ok=True)
+
+    # Use fake API keys for testing if real ones are not available
+    openai_key = os.getenv("OPENAI_API_KEY_TEST") or os.getenv("OPENAI_API_KEY") or "fake-key-for-testing"
+    tavily_key = os.getenv("TAVILY_API_KEY_TEST") or os.getenv("TAVILY_API_KEY") or "fake-tavily-key"
 
     engine = CoreRAGEngine(
         llm_provider="openai",
         embedding_provider="openai",
         persist_directory_base=test_dir,
-        openai_api_key=os.getenv("OPENAI_API_KEY_TEST", os.getenv("OPENAI_API_KEY")),
-        tavily_api_key=os.getenv("TAVILY_API_KEY_TEST", os.getenv("TAVILY_API_KEY")),
+        openai_api_key=openai_key,
+        tavily_api_key=tavily_key,
     )
 
     yield engine

@@ -216,7 +216,11 @@ class CoreRAGEngine:
 
         # Document Manager (handles document loading and splitting)
         self.document_manager = DocumentManager(
-            text_splitter_factory=self.text_splitter_factory,
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
+            openai_api_key=self.openai_api_key,
+            llm_provider=self.llm_provider,
+            llm_model_name=self.llm_model_name,
             logger=self.logger,
         )
 
