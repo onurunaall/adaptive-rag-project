@@ -300,6 +300,9 @@ class VectorStoreManager:
                 self.retrievers[collection_name] = standard_retriever
                 self.logger.debug(f"Standard retriever set up for '{collection_name}'.")
 
+        except ValueError:
+            # Re-raise ValueError as-is (e.g., vectorstore not found)
+            raise
         except Exception as e:
             error_msg = f"Unexpected error in setup_retriever_for_collection for '{collection_name}': {e}"
             self.logger.critical(error_msg, exc_info=True)

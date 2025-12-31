@@ -830,11 +830,14 @@ class CoreRAGEngine:
 
     def ingest(
         self,
-        source_type: str,
-        source_value: Any,
+        source_type: Optional[str] = None,
+        source_value: Optional[Any] = None,
         collection_name: Optional[str] = None,
         recreate: bool = False,
         strategy: str = "default",
+        # Backward compatibility parameters
+        direct_documents: Optional[List[Document]] = None,
+        recreate_collection: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Public ingestion API - delegates to DocumentManager and VectorStoreManager.
@@ -845,21 +848,37 @@ class CoreRAGEngine:
             collection_name: Collection name (defaults to default_collection_name)
             recreate: Whether to recreate collection
             strategy: Splitting strategy (default, adaptive, semantic, hybrid)
+            direct_documents: (Backward compat) Pre-loaded documents to ingest directly
+            recreate_collection: (Backward compat) Alias for recreate parameter
 
         Returns:
             Dictionary with status and number of documents ingested
         """
         try:
-            self.logger.info(f"Ingesting from {source_type}: {source_value}")
+            # Handle backward compatibility for recreate_collection
+            if recreate_collection is not None:
+                recreate = recreate_collection
 
-            # Load documents via DocumentManager
-            documents = self.document_manager.load_documents(source_type, source_value)
+            # Handle backward compatibility for direct_documents
+            if direct_documents is not None:
+                self.logger.info(f"Ingesting {len(direct_documents)} direct documents")
+                documents = direct_documents
+                # Split documents via DocumentManager
+                split_docs = self.document_manager.split_documents(documents, strategy=strategy)
+            else:
+                # New API path
+                if source_type is None or source_value is None:
+                    raise ValueError("Either provide source_type/source_value or direct_documents")
 
-            if not documents:
-                return {"status": "error", "message": "No documents loaded", "documents_ingested": 0}
+                self.logger.info(f"Ingesting from {source_type}: {source_value}")
+                # Load documents via DocumentManager
+                documents = self.document_manager.load_documents(source_type, source_value)
 
-            # Split documents via DocumentManager
-            split_docs = self.document_manager.split_documents(documents, strategy=strategy)
+                if not documents:
+                    return {"status": "error", "message": "No documents loaded", "documents_ingested": 0}
+
+                # Split documents via DocumentManager
+                split_docs = self.document_manager.split_documents(documents, strategy=strategy)
 
             if not split_docs:
                 return {"status": "error", "message": "No documents after splitting", "documents_ingested": 0}
