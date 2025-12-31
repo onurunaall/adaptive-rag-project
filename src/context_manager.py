@@ -39,8 +39,16 @@ class ContextManager:
                 self.encoder = tiktoken.encoding_for_model(model_name)
                 self.logger.info(f"Initialized tiktoken encoder for {model_name}")
             except KeyError:
-                self.logger.warning(f"Model {model_name} not found in tiktoken, using cl100k_base")
-                self.encoder = tiktoken.get_encoding("cl100k_base")
+                try:
+                    self.logger.warning(f"Model {model_name} not found in tiktoken, using cl100k_base")
+                    self.encoder = tiktoken.get_encoding("cl100k_base")
+                except Exception as e:
+                    self.logger.warning(f"Failed to load tiktoken encoding: {e}. Using character-based estimation")
+                    self.encoder = None
+            except Exception as e:
+                # Handle network errors or other exceptions during tiktoken initialization
+                self.logger.warning(f"Failed to initialize tiktoken encoder: {e}. Using character-based estimation")
+                self.encoder = None
         else:
             self.encoder = None
             self.logger.warning("tiktoken not available, using character-based estimation")
