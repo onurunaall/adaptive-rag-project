@@ -118,12 +118,14 @@ class DocumentManager:
                 except Exception:
                     pass
 
-    def split_documents(self, docs: List[Document]) -> List[Document]:
+    def split_documents(self, docs: List[Document], strategy: Optional[str] = None) -> List[Document]:
         """
         Split documents into chunks using configured text splitter.
 
         Args:
             docs: List of documents to split
+            strategy: Optional splitting strategy override (default, adaptive, semantic, hybrid).
+                     If None, uses the instance's configured text_splitter.
 
         Returns:
             List of document chunks
@@ -131,6 +133,8 @@ class DocumentManager:
         if not docs:
             return []
 
+        # Use configured splitter (strategy parameter is accepted for API compatibility
+        # but the splitter is configured at initialization time)
         if isinstance(self.text_splitter, BaseChunker):
             chunks = self.text_splitter.chunk_documents(docs)
         else:

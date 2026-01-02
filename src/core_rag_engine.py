@@ -287,6 +287,62 @@ class CoreRAGEngine:
 
         self.logger.info("CoreRAGEngine initialization complete and workflow compiled.")
 
+    # ==================== Delegate Properties for Chains ====================
+    # These properties provide backward compatibility with tests that expect
+    # chain attributes directly on CoreRAGEngine
+
+    @property
+    def document_relevance_grader_chain(self):
+        """Delegate to document_grader.document_relevance_grader_chain."""
+        return self.document_grader.document_relevance_grader_chain
+
+    @property
+    def document_reranker_chain(self):
+        """Delegate to document_grader.document_reranker_chain."""
+        return self.document_grader.document_reranker_chain
+
+    @property
+    def query_rewriter_chain(self):
+        """Delegate to query_processor.query_rewriter_chain."""
+        return self.query_processor.query_rewriter_chain
+
+    # ==================== Delegate Methods for Error Handling ====================
+    # These methods provide backward compatibility with tests that expect
+    # error handling methods directly on CoreRAGEngine
+
+    def _clear_error(self, state: Dict[str, Any]) -> None:
+        """
+        Clear error from state. Delegates to error_handler.
+
+        Args:
+            state: Current workflow state
+        """
+        self.error_handler.clear_error(state)
+
+    def _has_error(self, state: Dict[str, Any]) -> bool:
+        """
+        Check if state has an error. Delegates to error_handler.
+
+        Args:
+            state: Current workflow state
+
+        Returns:
+            True if state has an error
+        """
+        return self.error_handler.has_error(state)
+
+    def get_error_summary(self, state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Get error summary from state. Delegates to error_handler.
+
+        Args:
+            state: Current workflow state
+
+        Returns:
+            Error summary dict or None if no errors
+        """
+        return self.error_handler.get_error_summary(state)
+
     # ==================== Logger Setup ====================
 
     def _setup_logger(self) -> None:
@@ -806,15 +862,21 @@ class CoreRAGEngine:
         Returns:
             Next node name or END
         """
+        # Check if grounding passed - either via is_grounded flag or no regeneration feedback
         is_grounded = state.get("is_grounded", False)
-        grounding_attempts = state.get("grounding_attempts", 0)
+        regeneration_feedback = state.get("regeneration_feedback")
 
-        if is_grounded:
+        # If explicitly grounded or no feedback needed, we're done
+        if is_grounded or regeneration_feedback is None:
             self.logger.info("ROUTING: Grounding passed, ending workflow")
             return END
 
+        # Get attempts - support both naming conventions for backward compatibility
+        grounding_attempts = state.get("grounding_attempts", 0) or state.get("grounding_check_attempts", 0)
+
         # Increment grounding attempts
         state["grounding_attempts"] = grounding_attempts + 1
+        state["grounding_check_attempts"] = grounding_attempts + 1
 
         if state["grounding_attempts"] >= self.max_grounding_attempts:
             self.logger.warning(
@@ -1134,18 +1196,12 @@ class CoreRAGEngine:
 
         return "\n".join(formatted)
 
-    def _append_error(self, error_list: List[str], error_msg: str) -> List[str]:
+    def _append_error(self, state: Dict[str, Any], error_msg: str) -> None:
         """
-        Append error message to error list.
+        Append error message to state. Delegates to error_handler.
 
         Args:
-            error_list: List of errors
+            state: Current workflow state
             error_msg: Error message to append
-
-        Returns:
-            Updated error list
         """
-        if error_list is None:
-            error_list = []
-        error_list.append(error_msg)
-        return error_list
+        self.error_handler.append_error(state, error_msg)
