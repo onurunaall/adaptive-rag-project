@@ -91,3 +91,23 @@ class ErrorHandler:
             "full_message": error_msg,
             "severity": "critical" if "critical" in error_msg.lower() else "error",
         }
+
+    def handle_error(self, exception: Exception, context: str = "operation") -> Dict[str, Any]:
+        """
+        Handle an exception and return a standardized error response.
+
+        Args:
+            exception: The exception that occurred
+            context: Description of the operation that failed (e.g., "ingestion", "query")
+
+        Returns:
+            Dictionary with error status and message
+        """
+        error_msg = f"{context} failed: {str(exception)}"
+        self.logger.error(error_msg, exc_info=True)
+
+        return {
+            "status": "error",
+            "message": error_msg,
+            "error_type": type(exception).__name__,
+        }

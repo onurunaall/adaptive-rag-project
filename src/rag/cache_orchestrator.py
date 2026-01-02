@@ -81,7 +81,11 @@ class CacheOrchestrator:
                     self.cache_timestamps.pop(collection_name, None)
 
                     if removed_docs:
-                        removed_size = sys.getsizeof(removed_docs) / (1024 * 1024)
+                        # Calculate removed size consistently with initial calculation
+                        removed_size_bytes = sys.getsizeof(removed_docs)
+                        for doc in removed_docs:
+                            removed_size_bytes += sys.getsizeof(doc.page_content)
+                        removed_size = removed_size_bytes / (1024 * 1024)
                         current_size_mb -= removed_size
                         self.logger.info(
                             f"Evicted '{collection_name}' from cache ({len(removed_docs)} docs, "
