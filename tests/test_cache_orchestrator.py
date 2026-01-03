@@ -75,9 +75,10 @@ class TestMaintainCache:
         # Mock getsizeof to simulate large cache size
         mock_getsizeof.return_value = 100 * 1024 * 1024  # 100 MB
 
-        cache_orchestrator.cache_documents("collection1", sample_documents[:1])
+        # Use auto_maintain=False to prevent premature eviction during setup
+        cache_orchestrator.cache_documents("collection1", sample_documents[:1], auto_maintain=False)
         time.sleep(0.01)
-        cache_orchestrator.cache_documents("collection2", sample_documents[1:])
+        cache_orchestrator.cache_documents("collection2", sample_documents[1:], auto_maintain=False)
 
         cache_orchestrator.maintain_cache(max_cache_size_mb=50.0)
 
@@ -214,8 +215,13 @@ class TestGetCacheStats:
 
     def test_get_cache_stats_error_handling(self, cache_orchestrator):
         """Test error handling in get_cache_stats."""
-        # Create invalid cache entry
-        cache_orchestrator.document_cache["bad"] = [Mock(page_content=Mock(side_effect=Exception()))]
+        # Create a mock that raises exception when __sizeof__ is called
+        bad_doc = Mock()
+        bad_doc.__sizeof__ = Mock(side_effect=Exception("Test error"))
+        bad_doc.page_content = "test"
+        bad_doc.metadata = {}
+
+        cache_orchestrator.document_cache["bad"] = [bad_doc]
 
         stats = cache_orchestrator.get_cache_stats()
 
