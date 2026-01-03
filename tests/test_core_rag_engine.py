@@ -189,8 +189,7 @@ def test_rag_web_search_fallback(rag_engine, mocker):
     assert "AlphaFold3" in result_state["context"]
 
 
-@pytest.mark.asyncio  # ADDED: Decorator for async test
-async def test_grounding_check_node_on_failure(rag_engine, mocker):  # ADDED: async keyword
+def test_grounding_check_node_on_failure(rag_engine, mocker):
     mock_failure_output = GroundingCheck(
         is_grounded=False,
         ungrounded_statements=["The sky is green."],
@@ -218,15 +217,14 @@ async def test_grounding_check_node_on_failure(rag_engine, mocker):  # ADDED: as
         "collection_name": None,
         "chat_history": [],
     }
-    result_state = await rag_engine._grounding_check_node(initial_state)  # ADDED: await
+    result_state = rag_engine._grounding_check_node(initial_state)
 
     assert result_state["regeneration_feedback"] is not None
     assert "The following statements were ungrounded" in result_state["regeneration_feedback"]
     assert result_state["grounding_check_attempts"] == 1
 
 
-@pytest.mark.asyncio  # ADDED: Decorator for async test
-async def test_grounding_check_node_on_success(rag_engine, mocker):  # ADDED: async keyword
+def test_grounding_check_node_on_success(rag_engine, mocker):
     mock_success_output = GroundingCheck(is_grounded=True)
 
     mock_chain = Mock()
@@ -250,7 +248,7 @@ async def test_grounding_check_node_on_success(rag_engine, mocker):  # ADDED: as
         "collection_name": None,
         "chat_history": [],
     }
-    result_state = await rag_engine._grounding_check_node(initial_state)  # ADDED: await
+    result_state = rag_engine._grounding_check_node(initial_state)
 
     assert result_state["regeneration_feedback"] is None
     assert result_state["grounding_check_attempts"] == 1
