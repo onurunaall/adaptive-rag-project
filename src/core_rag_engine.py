@@ -371,6 +371,22 @@ class CoreRAGEngine:
         if hasattr(self.answer_generator, 'grounding_check_chain'):
             delattr(self.answer_generator, 'grounding_check_chain')
 
+    @property
+    def answer_generation_chain(self):
+        """Delegate to answer_generator.answer_generation_chain."""
+        return self.answer_generator.answer_generation_chain
+
+    @answer_generation_chain.setter
+    def answer_generation_chain(self, value):
+        """Allow setting for test mocking purposes."""
+        self.answer_generator.answer_generation_chain = value
+
+    @answer_generation_chain.deleter
+    def answer_generation_chain(self):
+        """Allow deletion for test cleanup."""
+        if hasattr(self.answer_generator, 'answer_generation_chain'):
+            delattr(self.answer_generator, 'answer_generation_chain')
+
     # ==================== Delegate Methods for Error Handling ====================
     # These methods provide backward compatibility with tests that expect
     # error handling methods directly on CoreRAGEngine
@@ -1289,6 +1305,16 @@ class CoreRAGEngine:
             max_cache_size_mb: Maximum cache size in MB (uses default if None)
         """
         self.cache_orchestrator.maintain_cache(max_cache_size_mb)
+
+    @property
+    def document_cache(self) -> Dict[str, List[Any]]:
+        """
+        Access to document cache - delegates to CacheOrchestrator.
+
+        Returns:
+            Document cache dictionary
+        """
+        return self.cache_orchestrator.document_cache
 
     # ==================== Helper Methods ====================
 
