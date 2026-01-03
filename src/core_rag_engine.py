@@ -294,59 +294,82 @@ class CoreRAGEngine:
     @property
     def document_relevance_grader_chain(self):
         """Delegate to document_grader.document_relevance_grader_chain."""
-        # Check for test override first
-        if hasattr(self, '_document_relevance_grader_chain_override'):
-            return self._document_relevance_grader_chain_override
         return self.document_grader.document_relevance_grader_chain
 
     @document_relevance_grader_chain.setter
     def document_relevance_grader_chain(self, value):
         """Allow setting for test mocking purposes."""
-        self._document_relevance_grader_chain_override = value
+        self.document_grader.document_relevance_grader_chain = value
 
     @document_relevance_grader_chain.deleter
     def document_relevance_grader_chain(self):
         """Allow deletion for test cleanup."""
-        if hasattr(self, '_document_relevance_grader_chain_override'):
-            delattr(self, '_document_relevance_grader_chain_override')
+        if hasattr(self.document_grader, 'document_relevance_grader_chain'):
+            delattr(self.document_grader, 'document_relevance_grader_chain')
 
     @property
     def document_reranker_chain(self):
         """Delegate to document_grader.document_reranker_chain."""
-        # Check for test override first
-        if hasattr(self, '_document_reranker_chain_override'):
-            return self._document_reranker_chain_override
         return self.document_grader.document_reranker_chain
 
     @document_reranker_chain.setter
     def document_reranker_chain(self, value):
         """Allow setting for test mocking purposes."""
-        self._document_reranker_chain_override = value
+        self.document_grader.document_reranker_chain = value
 
     @document_reranker_chain.deleter
     def document_reranker_chain(self):
         """Allow deletion for test cleanup."""
-        if hasattr(self, '_document_reranker_chain_override'):
-            delattr(self, '_document_reranker_chain_override')
+        if hasattr(self.document_grader, 'document_reranker_chain'):
+            delattr(self.document_grader, 'document_reranker_chain')
 
     @property
     def query_rewriter_chain(self):
         """Delegate to query_processor.query_rewriter_chain."""
-        # Check for test override first
-        if hasattr(self, '_query_rewriter_chain_override'):
-            return self._query_rewriter_chain_override
         return self.query_processor.query_rewriter_chain
 
     @query_rewriter_chain.setter
     def query_rewriter_chain(self, value):
         """Allow setting for test mocking purposes."""
-        self._query_rewriter_chain_override = value
+        self.query_processor.query_rewriter_chain = value
 
     @query_rewriter_chain.deleter
     def query_rewriter_chain(self):
         """Allow deletion for test cleanup."""
-        if hasattr(self, '_query_rewriter_chain_override'):
-            delattr(self, '_query_rewriter_chain_override')
+        if hasattr(self.query_processor, 'query_rewriter_chain'):
+            delattr(self.query_processor, 'query_rewriter_chain')
+
+    @property
+    def query_analyzer_chain(self):
+        """Delegate to query_processor.query_analyzer_chain."""
+        return self.query_processor.query_analyzer_chain
+
+    @query_analyzer_chain.setter
+    def query_analyzer_chain(self, value):
+        """Allow setting for test mocking purposes."""
+        self.query_processor.query_analyzer_chain = value
+
+    @query_analyzer_chain.deleter
+    def query_analyzer_chain(self):
+        """Allow deletion for test cleanup."""
+        if hasattr(self.query_processor, 'query_analyzer_chain'):
+            delattr(self.query_processor, 'query_analyzer_chain')
+
+    @property
+    def grounding_check_chain(self):
+        """Delegate to answer_generator.grounding_check_chain."""
+        return self.answer_generator.grounding_check_chain
+
+    @grounding_check_chain.setter
+    def grounding_check_chain(self, value):
+        """Allow setting for test mocking purposes."""
+        self.answer_generator.grounding_check_chain = value
+
+    @grounding_check_chain.deleter
+    def grounding_check_chain(self):
+        """Allow deletion for test cleanup."""
+        if hasattr(self.answer_generator, 'grounding_check_chain'):
+            delattr(self.answer_generator, 'grounding_check_chain')
 
     # ==================== Delegate Methods for Error Handling ====================
     # These methods provide backward compatibility with tests that expect
@@ -1257,6 +1280,15 @@ class CoreRAGEngine:
         Invalidate all caches - delegates to CacheOrchestrator.
         """
         self.cache_orchestrator.invalidate_all_caches()
+
+    def _maintain_cache(self, max_cache_size_mb: Optional[float] = None) -> None:
+        """
+        Maintain cache by removing old entries if needed - delegates to CacheOrchestrator.
+
+        Args:
+            max_cache_size_mb: Maximum cache size in MB (uses default if None)
+        """
+        self.cache_orchestrator.maintain_cache(max_cache_size_mb)
 
     # ==================== Helper Methods ====================
 
