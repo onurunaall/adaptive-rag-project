@@ -72,8 +72,24 @@ class TestMaintainCache:
     @patch('src.rag.cache_orchestrator.sys.getsizeof')
     def test_maintain_cache_exceeds_limit(self, mock_getsizeof, cache_orchestrator, sample_documents):
         """Test that cache evicts oldest entries when exceeding limit."""
-        # Mock getsizeof to simulate large cache size
-        mock_getsizeof.return_value = 100 * 1024 * 1024  # 100 MB
+        # Mock getsizeof to simulate large cache size that triggers eviction
+        # Return values: 30MB for collection lists, 10MB for doc contents
+        # This gives: collection1 = 40MB, collection2 = 50MB, total = 90MB > 50MB limit
+        # After evicting collection1, we have 50MB which is still > 45MB (90% of limit)
+        # But the test expects collection2 to remain, so let's make collection2 smaller
+        # collection1 = 35MB, collection2 = 20MB, total = 55MB > 50MB
+        # After evicting collection1, we have 20MB < 45MB
+        mock_getsizeof.side_effect = [
+            # First pass: calculate total size
+            35 * 1024 * 1024,  # collection1 list
+            35 * 1024 * 1024,  # collection1 doc content
+            10 * 1024 * 1024,  # collection2 list
+            10 * 1024 * 1024,  # collection2 doc1 content
+            10 * 1024 * 1024,  # collection2 doc2 content
+            # Eviction pass: calculate removed size for collection1
+            35 * 1024 * 1024,  # removed collection1 list
+            35 * 1024 * 1024,  # removed collection1 doc content
+        ]
 
         # Use auto_maintain=False to prevent premature eviction during setup
         cache_orchestrator.cache_documents("collection1", sample_documents[:1], auto_maintain=False)
