@@ -4,7 +4,12 @@ Pytest configuration and fixtures for the test suite.
 
 import pytest
 
-pytest_plugins = ("pytest_asyncio",)
+# Conditionally load pytest-asyncio plugin if available
+try:
+    import pytest_asyncio
+    pytest_plugins = ("pytest_asyncio",)
+except ImportError:
+    pytest_plugins = ()
 
 
 def pytest_configure(config):
