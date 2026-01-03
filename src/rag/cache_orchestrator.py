@@ -143,6 +143,7 @@ class CacheOrchestrator:
         """
         try:
             cache_key = collection_name
+            removed_docs = None
 
             if cache_key in self.document_cache:
                 removed_docs = self.document_cache.pop(cache_key, None)
@@ -193,7 +194,7 @@ class CacheOrchestrator:
                 "cached_collections": len(self.document_cache),
                 "collection_names": list(self.document_cache.keys()),
                 "total_documents": total_docs,
-                "estimated_memory_mb": round(total_memory_bytes / (1024 * 1024), 2),
+                "estimated_memory_mb": total_memory_bytes / (1024 * 1024),
                 "cache_timestamps": {name: timestamp for name, timestamp in self.cache_timestamps.items()},
                 "cache_ttl_seconds": self.cache_ttl,
                 "max_cache_size_mb": self.max_cache_size_mb,
@@ -238,13 +239,14 @@ class CacheOrchestrator:
 
         self.logger.info(f"Cache TTL updated: {old_ttl}s → {ttl_seconds}s")
 
-    def cache_documents(self, collection_name: str, documents: List[Any]) -> None:
+    def cache_documents(self, collection_name: str, documents: List[Any], auto_maintain: bool = True) -> None:
         """
         Cache documents for a collection.
 
         Args:
             collection_name: Name of collection
             documents: List of documents to cache
+            auto_maintain: Whether to automatically call maintain_cache after caching (default: True)
         """
         try:
             self.document_cache[collection_name] = documents
@@ -254,7 +256,8 @@ class CacheOrchestrator:
                 f"Cached {len(documents)} documents for collection '{collection_name}'"
             )
 
-            self.maintain_cache()
+            if auto_maintain:
+                self.maintain_cache()
 
         except Exception as e:
             self.logger.error(f"Error caching documents for '{collection_name}': {e}", exc_info=True)

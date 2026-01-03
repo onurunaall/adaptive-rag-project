@@ -294,17 +294,59 @@ class CoreRAGEngine:
     @property
     def document_relevance_grader_chain(self):
         """Delegate to document_grader.document_relevance_grader_chain."""
+        # Check for test override first
+        if hasattr(self, '_document_relevance_grader_chain_override'):
+            return self._document_relevance_grader_chain_override
         return self.document_grader.document_relevance_grader_chain
+
+    @document_relevance_grader_chain.setter
+    def document_relevance_grader_chain(self, value):
+        """Allow setting for test mocking purposes."""
+        self._document_relevance_grader_chain_override = value
+
+    @document_relevance_grader_chain.deleter
+    def document_relevance_grader_chain(self):
+        """Allow deletion for test cleanup."""
+        if hasattr(self, '_document_relevance_grader_chain_override'):
+            delattr(self, '_document_relevance_grader_chain_override')
 
     @property
     def document_reranker_chain(self):
         """Delegate to document_grader.document_reranker_chain."""
+        # Check for test override first
+        if hasattr(self, '_document_reranker_chain_override'):
+            return self._document_reranker_chain_override
         return self.document_grader.document_reranker_chain
+
+    @document_reranker_chain.setter
+    def document_reranker_chain(self, value):
+        """Allow setting for test mocking purposes."""
+        self._document_reranker_chain_override = value
+
+    @document_reranker_chain.deleter
+    def document_reranker_chain(self):
+        """Allow deletion for test cleanup."""
+        if hasattr(self, '_document_reranker_chain_override'):
+            delattr(self, '_document_reranker_chain_override')
 
     @property
     def query_rewriter_chain(self):
         """Delegate to query_processor.query_rewriter_chain."""
+        # Check for test override first
+        if hasattr(self, '_query_rewriter_chain_override'):
+            return self._query_rewriter_chain_override
         return self.query_processor.query_rewriter_chain
+
+    @query_rewriter_chain.setter
+    def query_rewriter_chain(self, value):
+        """Allow setting for test mocking purposes."""
+        self._query_rewriter_chain_override = value
+
+    @query_rewriter_chain.deleter
+    def query_rewriter_chain(self):
+        """Allow deletion for test cleanup."""
+        if hasattr(self, '_query_rewriter_chain_override'):
+            delattr(self, '_query_rewriter_chain_override')
 
     # ==================== Delegate Methods for Error Handling ====================
     # These methods provide backward compatibility with tests that expect
@@ -506,6 +548,42 @@ class CoreRAGEngine:
 
         except Exception as e:
             self.logger.error(f"Error initializing stream for '{collection_name}': {e}", exc_info=True)
+
+    def _get_all_documents_from_collection(
+        self,
+        collection_name: str,
+        use_cache: bool = True,
+        max_documents: Optional[int] = None,
+    ) -> List[Document]:
+        """
+        Get all documents from a collection.
+
+        Wrapper method for _get_all_documents_callback.
+
+        Args:
+            collection_name: Collection to retrieve from
+            use_cache: Whether to use cache (default: True)
+            max_documents: Maximum documents to return (default: None for all)
+
+        Returns:
+            List of Document objects
+        """
+        return self._get_all_documents_callback(collection_name, use_cache, max_documents)
+
+    def _stream_documents_from_collection(self, collection_name: str, batch_size: int = 1000):
+        """
+        Stream documents from a collection in batches.
+
+        Wrapper method for _stream_documents_callback.
+
+        Args:
+            collection_name: Collection to stream from
+            batch_size: Number of documents per batch (default: 1000)
+
+        Yields:
+            Batches of Document objects
+        """
+        yield from self._stream_documents_callback(collection_name, batch_size)
 
     # ==================== Workflow Node Functions ====================
 
@@ -778,14 +856,19 @@ class CoreRAGEngine:
                             documents.append(doc)
 
                 state["documents"] = documents
+                # Format context from search results
+                context = self.answer_generator.format_context(documents)
+                state["context"] = context
                 self.logger.info(f"Web search returned {len(documents)} documents")
             else:
                 self.logger.warning("Search tool not available")
                 state["documents"] = []
+                state["context"] = ""
 
         except Exception as e:
             self.logger.error(f"Web search error: {e}", exc_info=True)
             state["documents"] = []
+            state["context"] = ""
 
         return state
 
@@ -874,15 +957,16 @@ class CoreRAGEngine:
         # Get attempts - support both naming conventions for backward compatibility
         grounding_attempts = state.get("grounding_attempts", 0) or state.get("grounding_check_attempts", 0)
 
-        # Increment grounding attempts
-        state["grounding_attempts"] = grounding_attempts + 1
-        state["grounding_check_attempts"] = grounding_attempts + 1
-
-        if state["grounding_attempts"] >= self.max_grounding_attempts:
+        # Check if max attempts reached BEFORE incrementing
+        if grounding_attempts >= self.max_grounding_attempts:
             self.logger.warning(
                 f"Max grounding attempts ({self.max_grounding_attempts}) reached, ending workflow"
             )
             return END
+
+        # Increment grounding attempts for the next iteration
+        state["grounding_attempts"] = grounding_attempts + 1
+        state["grounding_check_attempts"] = grounding_attempts + 1
 
         # Regenerate answer with feedback
         self.logger.info("ROUTING: Grounding failed, regenerating answer")
