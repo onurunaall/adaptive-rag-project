@@ -860,6 +860,9 @@ class CoreRAGEngine:
 
             state["regeneration_feedback"] = feedback
 
+        # Increment grounding check attempts
+        state["grounding_check_attempts"] = state.get("grounding_check_attempts", 0) + 1
+
         self.logger.info(f"Grounding check: {'PASSED' if is_grounded else 'FAILED'}")
 
         return state
@@ -1169,6 +1172,9 @@ class CoreRAGEngine:
 
         final_state = await self.workflow_orchestrator.ainvoke_workflow(initial_state)
 
+        # Add 'answer' key for backward compatibility
+        final_state["answer"] = final_state.get("generation", "")
+
         return final_state
 
     def run_full_rag_workflow_sync(
@@ -1205,6 +1211,9 @@ class CoreRAGEngine:
         )
 
         final_state = self.workflow_orchestrator.invoke_workflow(initial_state)
+
+        # Add 'answer' key for backward compatibility
+        final_state["answer"] = final_state.get("generation", "")
 
         return final_state
 
