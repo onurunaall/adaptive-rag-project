@@ -2,6 +2,7 @@
 Security tests for SQL injection vulnerabilities in MCP SQL server.
 """
 import pytest
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -117,32 +118,32 @@ class TestSQLInjectionPrevention:
 class TestSQLSecurityIntegration:
     """Integration tests for SQL security features."""
 
-    def test_prevent_path_traversal_in_db_path(self):
-        """Test that database paths are validated."""
-        # This is a placeholder - actual implementation would test db path validation
-        # The current implementation should validate db_path in tool functions
-        malicious_paths = [
-            "../../../etc/passwd",
-            "../../sensitive.db",
-            "/etc/shadow",
-            "C:\\Windows\\System32\\config\\SAM",
+    @pytest.mark.asyncio
+    async def test_query_validation_prevents_injection(self, tmp_path):
+        """Test that malicious queries are rejected by query_structured_data."""
+        from mcp.sql_server import query_structured_data
+
+        # Create temp database file (not :memory:)
+        db_path = tmp_path / "test.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE test (id INTEGER, name TEXT)")
+        conn.execute("INSERT INTO test VALUES (1, 'test')")
+        conn.commit()
+        conn.close()
+
+        malicious_queries = [
+            "SELECT * FROM test; DROP TABLE test;",  # Query stacking
+            "SELECT * FROM test WHERE 1=1--",  # Comment
+            "SELECT * FROM test /* comment */ WHERE 1=1",  # Block comment
+            "DROP TABLE test",  # Not a SELECT
+            "DELETE FROM test",  # Not a SELECT
+            "UPDATE test SET name='hacked'",  # Not a SELECT
         ]
 
-        # In actual use, these should be rejected by the tool
-        for malicious_path in malicious_paths:
-            # Test would invoke tool with malicious_path and verify rejection
-            # For now, we just document the requirement
-            assert True  # Placeholder
-
-    def test_parameterized_queries_used(self):
-        """Verify that parameterized queries are used where possible."""
-        # This test documents that we should use parameterized queries
-        # In sql_server.py, functions should use ? placeholders
-        # Example: cursor.execute("SELECT * FROM ? WHERE id = ?", (table, id))
-
-        # Note: SQLite doesn't support table names as parameters
-        # That's why we use identifier sanitization as defense-in-depth
-        assert True  # Documentation test
+        for query in malicious_queries:
+            result = await query_structured_data(query, str(db_path), validate_query=True)
+            assert not result["success"], f"Query should be rejected: {query}"
+            assert "error" in result
 
 
 if __name__ == "__main__":
