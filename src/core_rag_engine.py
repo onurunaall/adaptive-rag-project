@@ -24,7 +24,6 @@ from src.rag import (
     # Factories
     LLMFactory,
     EmbeddingFactory,
-    TextSplitterFactory,
     ChainFactory,
     # Managers
     DocumentManager,
@@ -189,16 +188,6 @@ class CoreRAGEngine:
             logger=self.logger,
         )
         self.embedding_model = self.embedding_factory.create_embedding_model()
-
-        # Initialize Text Splitter Factory
-        self.text_splitter_factory = TextSplitterFactory(
-            chunk_size=self.chunk_size,
-            chunk_overlap=self.chunk_overlap,
-            llm_provider=self.llm_provider,
-            llm_model_name=self.llm_model_name,
-            openai_api_key=self.openai_api_key,
-            logger=self.logger,
-        )
 
         # Initialize Chain Factory (for search tool)
         self.chain_factory = ChainFactory(
